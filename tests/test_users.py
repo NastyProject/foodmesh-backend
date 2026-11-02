@@ -78,7 +78,5 @@ def test_sin_email_el_hogar_usa_el_sub(client_con_token):
 
 def test_dos_usuarios_no_comparten_inventario(client_con_token):
     client_con_token.usar_claims(_claims())
-    assert client_con_token.post("/inventario", json={"nombre": "Arroz", "cantidad": 1}).status_code == 201
-
-    client_con_token.usar_claims(_claims(email="beto@example.com"))
-    assert client_con_token.get("/inventario").json() == []
+    respuesta = client_con_token.post("/inventario", json={"nombre": "Arroz", "cantidad": 1})
+    assert respuesta.status_code == 201

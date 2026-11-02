@@ -16,6 +16,4 @@ class ItemInventario(Base):
     cantidad: Mapped[float]
     unidad: Mapped[str] = mapped_column(String(20), default="unidad")
     fecha_vencimiento: Mapped[date | None] = mapped_column(Date)
-    creado_en: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
