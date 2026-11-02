@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, String, func
+from sqlalchemy import Date, DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -10,7 +10,7 @@ class ItemInventario(Base):
     __tablename__ = "items_inventario"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    hogar_id: Mapped[int] = mapped_column(index=True)
+    hogar_id: Mapped[int] = mapped_column(ForeignKey("hogares.id"), index=True)
     nombre: Mapped[str] = mapped_column(String(120))
     categoria: Mapped[str | None] = mapped_column(String(60))
     cantidad: Mapped[float]

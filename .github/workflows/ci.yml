@@ -65,7 +65,7 @@ jobs:
 
       - name: Tests
         # pytest devuelve 5 si no encuentra tests; no lo tratamos como fallo
-        run: pytest -q || [ $? -eq 5 ]
+        run: pytest -q
 
   # ------------------------------------------------------------
   # 2. Build de la imagen Docker (solo en main, si los tests pasan)
