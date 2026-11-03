@@ -17,8 +17,9 @@ def _buscar_o_404(db: DbSession, hogar_id: int, item_id: int) -> ItemInventario:
 
 
 @router.get("", response_model=list[ItemOut])
-def listar(db: DbSession, hogar_id: HogarId):
-    return service.listar_items(db, hogar_id)
+def listar(db: DbSession, hogar_id: HogarId, solo_alimentos: bool = False):
+    """Con ?solo_alimentos=true omite aseo, cuidado personal y productos para mascotas."""
+    return service.listar_items(db, hogar_id, solo_alimentos=solo_alimentos)
 
 
 @router.post("", response_model=ItemOut, status_code=status.HTTP_201_CREATED)

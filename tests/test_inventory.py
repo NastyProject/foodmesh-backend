@@ -43,3 +43,68 @@ def test_un_hogar_no_ve_items_de_otro(client):
     app.dependency_overrides[get_hogar_id] = lambda: OTRO_HOGAR
     assert client.get(f"/inventario/{item_id}").status_code == 404
     assert client.get("/inventario").json() == []
+
+
+DETERGENTE = {"nombre": "Detergente líquido", "categoria": "aseo_hogar", "cantidad": 1}
+
+
+def test_es_alimento_se_calcula_de_la_categoria(client):
+    leche = client.post("/inventario", json=LECHE).json()
+    detergente = client.post("/inventario", json=DETERGENTE).json()
+    assert leche["es_alimento"] is True
+    assert detergente["es_alimento"] is False
+
+
+def test_el_cliente_no_puede_fijar_es_alimento(client):
+    item = client.post("/inventario", json={**DETERGENTE, "es_alimento": True}).json()
+    assert item["es_alimento"] is False  # el campo se ignora
+
+
+def test_cambiar_categoria_recalcula_es_alimento(client):
+    item_id = client.post("/inventario", json=LECHE).json()["id"]
+
+    respuesta = client.patch(f"/inventario/{item_id}", json={"categoria": "mascotas"})
+    assert respuesta.json()["es_alimento"] is False
+
+
+def test_filtro_solo_alimentos(client):
+    client.post("/inventario", json=LECHE)
+    client.post("/inventario", json=DETERGENTE)
+    client.post("/inventario", json={**LECHE, "nombre": "Sin categoría", "categoria": None})
+
+    todos = client.get("/inventario").json()
+    alimentos = client.get("/inventario", params={"solo_alimentos": "true"}).json()
+    assert len(todos) == 3
+    assert sorted(i["nombre"] for i in alimentos) == ["Leche entera", "Sin categoría"]
+
+
+def test_filtro_solo_alimentos_respeta_el_hogar(client):
+    client.post("/inventario", json=LECHE)
+
+    app.dependency_overrides[get_hogar_id] = lambda: OTRO_HOGAR
+    assert client.get("/inventario", params={"solo_alimentos": "true"}).json() == []
+
+
+def test_categoria_fuera_de_la_lista_es_rechazada(client):
+    assert client.post("/inventario", json={**LECHE, "categoria": "leches"}).status_code == 422
+    assert client.post("/inventario", json={**LECHE, "categoria": "aseo"}).status_code == 422
+    assert client.get("/inventario").json() == []
+
+
+def test_categoria_sigue_siendo_opcional(client):
+    sin_categoria = {k: v for k, v in LECHE.items() if k != "categoria"}
+    assert client.post("/inventario", json=sin_categoria).json()["categoria"] is None
+    assert client.post("/inventario", json={**LECHE, "categoria": None}).status_code == 201
+
+
+def test_frutos_secos_es_alimento(client):
+    mani = client.post("/inventario", json={**LECHE, "categoria": "frutos_secos"}).json()
+    assert mani["es_alimento"] is True
+
+
+def test_actualizar_con_categoria_invalida(client):
+    item_id = client.post("/inventario", json=LECHE).json()["id"]
+
+    respuesta = client.patch(f"/inventario/{item_id}", json={"categoria": "juguetes"})
+    assert respuesta.status_code == 422
+    assert client.get(f"/inventario/{item_id}").json()["categoria"] == "lacteos"
