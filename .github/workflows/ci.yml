@@ -38,6 +38,13 @@ jobs:
       AUTH0_DOMAIN: test.example.com
       AUTH0_AUDIENCE: https://api.foodmesh.test
       GEMINI_API_KEY: dummy
+      GEMINI_MODEL: gemini-3.5-flash-lite
+      GEMINI_MODEL_RECETAS: gemini-3.5-flash-lite
+      # Los tests que lo necesitan lo activan (y reemplazan Gemini por un falso)
+      PRECALCULAR_RECETAS: "false"
+      # Los tests usan fakeredis (Redis en memoria): no hace falta un servicio de Redis
+      REDIS_URL: redis://localhost:6379/0
+      RECETAS_CACHE_TTL: "86400"
       # Los tests reemplazan el storage por uno en un directorio temporal
       STORAGE_BACKEND: local
 

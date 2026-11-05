@@ -6,7 +6,6 @@ la lista cerrada, números donde van números...). Así no hay que "parsear" tex
 """
 
 import re
-from functools import lru_cache
 from typing import Literal
 
 from google import genai
@@ -15,6 +14,7 @@ from pydantic import BaseModel, computed_field
 
 from app.catalog.categorias import Categoria, es_alimento
 from app.core.config import get_settings
+from app.core.gemini import THINKING_MINIMO, cliente_gemini, generar_contenido
 
 
 class ItemDetectado(BaseModel):
@@ -148,17 +148,27 @@ una lista vacía.\
 """
 
 
-def normalizar_items(texto: str, cliente: genai.Client, modelo: str) -> list[ItemDetectado]:
-    respuesta = cliente.models.generate_content(
-        model=modelo,
-        contents=texto,
+def normalizar_items(
+    texto: str, cliente: genai.Client, modelo: str, modelo_respaldo: str | None = None
+) -> list[ItemDetectado]:
+    # El modelo que respondió queda en el log (generar_contenido); la factura no lo guarda.
+    respuesta = generar_contenido(
+        cliente,
+        "facturas",
+        modelo=modelo,
+        modelo_respaldo=modelo_respaldo,
+        contenido=texto,
+        timeout_segundos=get_settings().gemini_timeout_interactivo,
         config=types.GenerateContentConfig(
             system_instruction=INSTRUCCIONES,
             temperature=0,  # extracción de datos: la respuesta más probable, sin creatividad
             response_mime_type="application/json",
             response_schema=RespuestaNormalizacion,
+            # Sin max_output_tokens: una factura larga puede tener muchos ítems, y una
+            # respuesta cortada sería un JSON inválido.
+            thinking_config=THINKING_MINIMO,
         ),
-    )
+    ).respuesta
     if not respuesta.text:
         raise ValueError("Gemini no devolvió contenido")
     # Validamos con Pydantic nosotros mismos: si la respuesta no cumple el esquema,
@@ -166,14 +176,9 @@ def normalizar_items(texto: str, cliente: genai.Client, modelo: str) -> list[Ite
     return RespuestaNormalizacion.model_validate_json(respuesta.text).items
 
 
-@lru_cache
-def _cliente_gemini() -> genai.Client:
-    api_key = get_settings().gemini_api_key
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY no está configurada")
-    return genai.Client(api_key=api_key)
-
-
 def normalizar_con_gemini(texto: str) -> list[ItemDetectado]:
     """Normalizador real, con el cliente y modelo de la configuración."""
-    return normalizar_items(texto, _cliente_gemini(), get_settings().gemini_model)
+    settings = get_settings()
+    return normalizar_items(
+        texto, cliente_gemini(), settings.gemini_model, settings.gemini_model_respaldo
+    )

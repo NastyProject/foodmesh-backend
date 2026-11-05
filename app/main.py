@@ -1,10 +1,21 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.inventory.router import router as inventory_router
 from app.invoices.router import router as invoices_router
+from app.preferences.router import router as preferences_router
+from app.recommendations.router import router as recommendations_router
 from app.users.router import router as users_router
+
+# Sin esto, los logger.info de la app (p. ej. la latencia de cada llamada a Gemini) no
+# salen: Python solo muestra WARNING o más por defecto. httpx y google_genai registran
+# cada petición en INFO; se dejan en WARNING para no llenar el log.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+for ruidoso in ("httpx", "google_genai"):
+    logging.getLogger(ruidoso).setLevel(logging.WARNING)
 
 app = FastAPI(title="FoodMesh API", version="0.1.0")
 
@@ -19,6 +30,8 @@ app.add_middleware(
 
 app.include_router(inventory_router)
 app.include_router(invoices_router)
+app.include_router(preferences_router)
+app.include_router(recommendations_router)
 app.include_router(users_router)
 
 
