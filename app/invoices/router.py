@@ -12,6 +12,7 @@ from app.invoices.schemas import FacturaOut, ItemFactura
 from app.ocr import preprocesamiento
 from app.ocr.normalizacion import normalizar_con_gemini
 from app.ocr.pipeline import Normalizador
+from app.recommendations.precalculo import PrecalculoDep
 
 router = APIRouter(prefix="/facturas", tags=["facturas"])
 
@@ -93,11 +94,15 @@ def confirmar(
     db: DbSession,
     hogar_id: HogarId,
     almacenamiento: Storage,
+    precalculo: PrecalculoDep,
 ):
     factura = _buscar_o_404(db, hogar_id, factura_id, bloquear=True)
     try:
-        return service.confirmar_factura(db, factura, items, almacenamiento)
+        creados = service.confirmar_factura(db, factura, items, almacenamiento)
     except service.FacturaYaConfirmada:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="La factura ya fue confirmada"
         ) from None
+    if any(item.es_alimento for item in creados):
+        precalculo.programar(hogar_id)
+    return creados

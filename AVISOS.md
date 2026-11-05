@@ -1,12 +1,14 @@
 # 📢 Avisos para frontend
 
-¡Qué más! Te dejo aquí lo que necesitas para arrancar con el frontend. El backend ya tiene **login con Auth0**, **inventario** y **facturas con OCR** funcionando, así que ya puedes conectarte a algo real.
+¡Qué más! Te dejo aquí lo que necesitas para arrancar con el frontend. El backend ya tiene **login con Auth0**, **inventario**, **facturas con OCR**, **preferencias del hogar** y **recetas sugeridas** funcionando, así que ya puedes conectarte a algo real.
 
 > 🆕 **Novedades de esta versión** (si ya venías usando el backend):
-> - Ya están los **endpoints de facturas** (sección 5): subir foto → revisar ítems detectados → confirmar.
-> - Las **categorías ahora son una lista cerrada** (sección 4). Cualquier otro valor responde `422`.
-> - Los ítems del inventario traen **`es_alimento`**, y hay un filtro **`GET /inventario?solo_alimentos=true`**.
-> - Después de hacer `git pull`, corre `alembic upgrade head` (hay migraciones nuevas) y vuelve a generar los tipos (sección 6).
+> - **Preferencias del hogar** (`GET` / `PUT /preferencias`) y **recetas sugeridas** (`POST /recomendaciones/recetas`) con botón de "¿te sirvió?". Todo está en la sección 6.
+> - Recetas: ya hay botón de **"otras recetas"** (`{"nuevas": true}`), y si no queda ninguna receta válida llega una **lista vacía con un `mensaje`** para mostrar (no es un error). Ver sección 6.
+> - Hay un servicio nuevo en Docker: corre `docker compose up -d db redis` en lugar de solo `db` (sección 2). Si no levantas Redis, el backend funciona igual, pero sin caché.
+> - Después de hacer `git pull`: `pip install -r requirements-dev.txt` (hay dependencias nuevas), `alembic upgrade head` (hay tablas nuevas) y vuelve a generar los tipos (sección 7).
+>
+> De la versión anterior: endpoints de facturas (sección 5), categorías como lista cerrada (sección 4), `es_alimento` y el filtro `GET /inventario?solo_alimentos=true`.
 
 ---
 
@@ -17,7 +19,8 @@
 | Login con Auth0 (usuario y hogar se crean solos en el primer login) | ✅ Listo |
 | Inventario: listar, crear, ver, editar, borrar ítems | ✅ Listo |
 | Subir factura + OCR, revisar y confirmar | ✅ Listo |
-| Recomendación de recetas | ⏳ Pendiente |
+| Preferencias del hogar (dieta, alergias, gustos) | ✅ Listo |
+| Recomendación de recetas | ✅ Listo |
 | Demanda agregada (vista supermercado) | ⏳ Pendiente |
 
 Cada usuario pertenece a un **hogar**, y solo ve el inventario de su hogar. El frontend **nunca** envía el `hogar_id`: el backend lo saca del token.
@@ -36,9 +39,9 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 
-cp .env.example .env               # te paso los valores de Auth0 por privado
+cp .env.example .env               # te paso los valores de Auth0 y la API key de Gemini por privado
 
-docker compose up -d db            # Postgres
+docker compose up -d db redis      # Postgres y Redis (caché de recetas)
 alembic upgrade head               # crea las tablas
 uvicorn app.main:app --reload      # API en http://localhost:8000
 ```
@@ -121,6 +124,10 @@ Todos (menos `/health`) requieren `Authorization: Bearer <token>`.
 | GET | `/facturas` | Lista las facturas del hogar, la más reciente primero | `200` |
 | GET | `/facturas/{id}` | Una factura, con sus ítems detectados | `200` / `404` |
 | POST | `/facturas/{id}/confirmar` | Pasa al inventario los ítems que revisó el usuario | `201` / `404` / `409` / `422` |
+| GET | `/preferencias` | Preferencias del hogar (o las de por defecto, si nunca las guardó) | `200` |
+| PUT | `/preferencias` | Guarda las preferencias (reemplaza todas) | `200` / `422` |
+| POST | `/recomendaciones/recetas` | Sugiere hasta 3 recetas con lo que hay en el inventario | `201` / `409` / `503` |
+| POST | `/recomendaciones/{id}/feedback` | Guarda si una receta le sirvió al usuario | `204` / `404` / `422` |
 
 ### Formas de los datos
 
@@ -189,10 +196,11 @@ Solo `nombre` y `cantidad` son obligatorios. `cantidad` debe ser mayor que 0, y 
 |---|---|---|
 | `401` | Sin token o token inválido/vencido | Mandar a login |
 | `404` | El ítem no existe (o es de otro hogar) | Mensaje de "no encontrado" |
-| `409` | La factura ya fue confirmada | Mensaje "esta factura ya está en tu inventario" y llevar al inventario |
+| `409` | En facturas: ya fue confirmada. En recetas: no hay alimentos en el inventario | Facturas: "esta factura ya está en tu inventario". Recetas: mostrar el `detail` con botones a "agregar producto" y "subir factura" |
 | `413` | La imagen pesa más de 10 MB | Pedir una foto más liviana (o comprimirla en el front antes de subirla) |
 | `415` | El archivo no es JPEG, PNG ni WebP, o no es una imagen | Pedir otra foto |
 | `422` | Datos inválidos (ej. cantidad negativa, categoría fuera de la lista) | Mostrar el error en el formulario. El detalle viene en `detail` |
+| `503` | La IA de recetas no respondió | Mostrar el `detail` y un botón de "intentar de nuevo" |
 
 ---
 
@@ -309,7 +317,116 @@ El body es una **lista** de ítems con la misma forma de `POST /inventario`, má
 
 ---
 
-## 6. Tipos de TypeScript automáticos
+## 6. Preferencias y recetas
+
+### Preferencias (`GET` / `PUT /preferencias`)
+
+Son del **hogar** (las comparten todos sus usuarios) y las usa el recomendador de recetas. Si el hogar nunca las guardó, `GET` devuelve estos valores por defecto:
+
+```json
+{
+  "dieta": "omnivora",
+  "alergias": [],
+  "no_le_gusta": [],
+  "porciones": 2,
+  "tiempo_max_minutos": null
+}
+```
+
+`PUT` recibe ese mismo objeto y devuelve lo que quedó guardado. **Reemplaza todo**: un campo que no mandes vuelve a su valor por defecto. Así que manda siempre el formulario completo.
+
+| Campo | Valores | En la UI |
+|---|---|---|
+| `dieta` | `omnivora`, `vegetariana`, `vegana`, `pescetariana` | Radio buttons o `<select>` |
+| `alergias` | Lista con cualquiera de: `lacteos`, `gluten`, `huevo`, `mani`, `frutos_secos`, `mariscos`, `pescado`, `soya` | Checkboxes. Otro valor responde `422` |
+| `no_le_gusta` | Texto libre, máximo 20 elementos de hasta 60 caracteres. Los repetidos se quitan solos | Input de "chips" o etiquetas (cilantro, berenjena…) |
+| `porciones` | Entero de 1 a 12 | Stepper − / + |
+| `tiempo_max_minutos` | Entero de 5 a 600, o `null` (sin límite) | `<select>`: 15, 30, 45, 60 min, "sin límite" |
+
+### Recetas (`POST /recomendaciones/recetas`)
+
+El backend toma los **alimentos** del inventario (`es_alimento: true`, sin vencer) y las preferencias del hogar. Tarda **unos segundos** la primera vez (llama a la IA; si ninguna receta sirve, reintenta una vez, así que puede tardar el doble) y es casi instantáneo si nada cambió (caché). Muestra un "pensando recetas…".
+
+El body es **opcional**:
+
+| Body | Cuándo | Qué hace |
+|---|---|---|
+| ninguno, o `{"nuevas": false}` | Al abrir la pantalla de recetas | Si el inventario y las preferencias no cambiaron, devuelve las mismas recetas de antes (caché) |
+| `{"nuevas": true}` | Botón **"🔄 Otras recetas"** | No usa la caché y le pide a la IA recetas distintas a las últimas que vio el hogar. Desde ahí, esas nuevas son las que salen al abrir la pantalla |
+
+```json
+{
+  "recomendacion_id": 31,
+  "recetas": [
+    {
+      "titulo": "Calentado de arroz con huevo",
+      "descripcion": "Un desayuno rápido para aprovechar el arroz que sobró.",
+      "tiempo_minutos": 20,
+      "porciones": 2,
+      "ingredientes": [
+        { "nombre": "Arroz", "cantidad": 2, "unidad": "taza", "item_id": 7 },
+        { "nombre": "Cebolla larga", "cantidad": 1, "unidad": "unidad", "item_id": null },
+        { "nombre": "Sal", "cantidad": null, "unidad": null, "item_id": null }
+      ],
+      "pasos": ["Picar la cebolla.", "Sofreír la cebolla y agregar el arroz."],
+      "por_que": "Usa el arroz que vence mañana.",
+      "usa_proximos_a_vencer": [
+        { "item_id": 7, "nombre": "Arroz blanco", "dias_para_vencer": 1 }
+      ],
+      "ingredientes_faltantes": ["Cebolla larga", "Sal"]
+    }
+  ],
+  "aviso": "Verifica siempre los ingredientes si tienes alergias: las recetas son generadas por IA.",
+  "mensaje": null,
+  "cache": "miss",
+  "latencia_ms": 4120,
+  "modelo": "gemini-2.5-flash"
+}
+```
+
+| Campo | Qué es | Qué hacer en la UI |
+|---|---|---|
+| `recetas` | **Hasta** 3. Pueden ser menos, incluso 0: el backend descarta las que tengan un alérgeno declarado, no cumplan la dieta o se pasen del tiempo máximo en más de un 20 % | Tarjetas |
+| `mensaje` | `null` si hay recetas. Si `recetas` viene vacía, trae una explicación lista para mostrar | Con lista vacía: mostrar el `mensaje` (no es un error, llega con `201`) y los botones "Otras recetas" y "Editar preferencias" |
+| `ingredientes[].item_id` | Id del ítem del inventario que usa, o `null` si hay que comprarlo (o es un básico como sal o aceite) | Marcar con ✓ "lo tienes" los que tienen `item_id` |
+| `usa_proximos_a_vencer` | Ítems del inventario que vencen en 3 días o menos y que la receta usa | **Destacarlo** en la tarjeta ("🕒 Usa: Arroz blanco, vence mañana"). Es el punto central de la app |
+| `ingredientes_faltantes` | Nombres de los ingredientes con `item_id: null` | Una sección "Te falta" |
+| `por_que` | Explicación de la IA de por qué la receta aprovecha lo que está por vencer | Debajo del título |
+| `aviso` | Texto fijo de seguridad | **Mostrarlo siempre**, visible, en la pantalla de recetas |
+| `recomendacion_id` | Id de esta sugerencia | Guárdalo para el feedback |
+| `cache`, `latencia_ms`, `modelo` | Datos técnicos para las métricas del artículo | No mostrarlos al usuario (si acaso en un modo debug) |
+
+- Pedir recetas de nuevo con el mismo inventario y las mismas preferencias devuelve **las mismas recetas** (caché de un día). Para otras, usa `{"nuevas": true}`. Si cambia algo del inventario de alimentos (nombre, cantidad, fecha) o de las preferencias, salen recetas nuevas solas.
+- Ejemplo de lista vacía:
+
+  ```json
+  {
+    "recomendacion_id": 32,
+    "recetas": [],
+    "aviso": "Verifica siempre los ingredientes si tienes alergias: las recetas son generadas por IA.",
+    "mensaje": "No encontramos recetas que cumplan tus preferencias con lo que tienes en el inventario. Intenta pedir otras recetas, agrega productos o revisa tus preferencias.",
+    "cache": "miss",
+    "latencia_ms": 8350,
+    "modelo": "gemini-2.5-flash"
+  }
+  ```
+- Con `409` (sin alimentos), el `detail` ya trae un mensaje listo para mostrar.
+
+### Feedback (`POST /recomendaciones/{id}/feedback`)
+
+Pon en cada tarjeta un 👍 / 👎 de "¿te sirvió esta receta?". Es la métrica de "relevancia percibida" del artículo, así que es importante que esté en la demo.
+
+```json
+{ "receta_indice": 0, "util": true }
+```
+
+- `receta_indice` es la posición de la receta en la lista `recetas` (0, 1 o 2).
+- Responde `204` sin contenido. Si el usuario cambia de opinión, manda otra vez: la última gana.
+- `404` si la recomendación no existe o es de otro hogar; `422` si el índice no corresponde a ninguna receta.
+
+---
+
+## 7. Tipos de TypeScript automáticos
 
 No escribas los tipos a mano: se generan desde el backend, y así nunca quedan desincronizados.
 
@@ -322,7 +439,7 @@ Vuelve a correrlo cada vez que te avise que cambió algún endpoint. Si quieres,
 
 ---
 
-## 7. Pantallas para ir arrancando
+## 8. Pantallas para ir arrancando
 
 Lo que ya puedes hacer contra el backend real:
 
@@ -333,16 +450,16 @@ Lo que ya puedes hacer contra el backend real:
 5. **Subir factura**: tomar foto o subir imagen y mostrar un "procesando…" (tarda unos segundos).
 6. **Validar factura**: la lista de ítems detectados, editable, con los renglones `revisar: true` resaltados y el aviso de `requiere_revision` arriba. El usuario corrige, agrega fechas de vencimiento y confirma. Es la pantalla más importante de la demo.
 7. **Historial de facturas** (`GET /facturas`): supermercado, fecha, total y estado; las pendientes se pueden abrir para terminar de validarlas.
+8. **Preferencias**: dieta, alergias (checkboxes), lo que no le gusta, porciones y tiempo máximo. Conviene pedirlas en el onboarding, justo después del primer login.
+9. **Recetas sugeridas**: hasta 3 tarjetas con ingredientes ("lo tienes" / "te falta") y pasos, destacando los productos próximos a vencer, con el aviso de alergias visible, el 👍 / 👎 en cada una y un botón "Otras recetas". Ojo con el estado de lista vacía (`mensaje`).
 
 Lo que viene, y que puedes maquetar con datos falsos mientras tanto:
 
-8. **Preferencias**: dieta y alergias.
-9. **Recetas sugeridas**: 2–3 tarjetas con ingredientes y pasos, destacando los productos próximos a vencer.
 10. **Vista supermercado**: un panel con la demanda agregada por categoría y zona.
 
 ---
 
-## 8. Acuerdos de trabajo
+## 9. Acuerdos de trabajo
 
 - Trabajamos con **ramas + PR** (`feat/login`, `feat/inventario`…). Nada directo a `main`.
 - Si necesitas un endpoint o un campo que no existe, me escribes y lo agregamos. No lo resuelvas con lógica rara en el front.
