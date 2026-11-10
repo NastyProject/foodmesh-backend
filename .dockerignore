@@ -1,0 +1,21 @@
+# Lo que no debe entrar a la imagen. Sobre todo los .env: tienen secretos reales, y la
+# imagen se publica en GHCR. La configuración llega en tiempo de ejecución (env_file).
+.env
+.env.*
+!.env.example
+deploy/.env
+
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+storage/
+
+# No hacen falta para correr la API
+tests/
+scripts/
+deploy/
+docker-compose.yml

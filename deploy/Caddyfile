@@ -1,0 +1,14 @@
+# Caddy pide y renueva solo el certificado HTTPS de Let's Encrypt para este dominio,
+# y redirige HTTP a HTTPS. El dominio sale de DOMINIO (deploy/.env).
+{$DOMINIO} {
+	# Comprime las respuestas JSON grandes (listas de recetas, inventario).
+	encode zstd gzip
+
+	# Caddy agrega X-Forwarded-For y X-Forwarded-Proto: uvicorn (--proxy-headers) los
+	# usa para saber que la petición original fue por HTTPS.
+	reverse_proxy api:8000
+
+	log {
+		output stdout
+	}
+}
