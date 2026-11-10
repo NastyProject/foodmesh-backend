@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: foodmesh
       POSTGRES_DB: foodmesh
     ports:
-      - "5432:5432"
+      - "8001:8000"
     volumes:
       - pgdata:/var/lib/postgresql/data
 

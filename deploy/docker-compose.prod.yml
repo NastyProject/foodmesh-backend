@@ -1,0 +1,71 @@
+# Producción en una EC2: api + redis + caddy. La BD es Amazon RDS (no hay contenedor
+# de Postgres) y las imágenes de facturas van a S3 con las credenciales del instance
+# profile (LabInstanceProfile). Ver deploy/README.md.
+#
+# Se corre desde la carpeta deploy/, junto al .env:
+#   docker compose -f docker-compose.prod.yml up -d
+
+# Rotación de logs de Docker: sin esto, los logs crecen hasta llenar el disco de la EC2.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  api:
+    # API_TAG (en .env) permite fijar una versión: el CI publica :latest y :<sha del commit>.
+    image: ghcr.io/nastyproject/foodmesh-backend:${API_TAG:-latest}
+    env_file: .env
+    restart: unless-stopped
+    # Sin "ports": la API no queda abierta en la EC2; solo Caddy le habla por la red
+    # interna de Docker (por eso el Dockerfile confía en los X-Forwarded-* de cualquier IP).
+    depends_on:
+      - redis
+    healthcheck:
+      # La imagen no trae curl: se usa Python, que sí está.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Al arrancar corre alembic upgrade head contra RDS antes de levantar uvicorn.
+      start_period: 40s
+    logging: *logging
+
+  # Caché de recetas y locks. Sin volumen a propósito: es caché, se puede perder.
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # Con el tope de memoria, Redis borra las claves usadas hace más tiempo en vez de
+    # crecer sin límite (allkeys-lru).
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    logging: *logging
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80" # Let's Encrypt valida el dominio por el puerto 80, y redirige a HTTPS
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      # Compose lo toma del .env de esta carpeta. Solo se le pasa esto a Caddy: no
+      # necesita (ni debe ver) los secretos de la API.
+      DOMINIO: ${DOMINIO:?Falta DOMINIO en deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Aquí guarda Caddy los certificados: si se pierden, pide otros a Let's Encrypt
+      # en cada reinicio y puede llegar a su límite de emisiones.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:
