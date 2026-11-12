@@ -3,7 +3,9 @@
 Se tomó con la versión anterior del anonimizador: por eso ya trae marcadores como
 [TELEFONO] o [CEDULA] y, a la vez, datos que esa versión no quitaba (NITS00276952-1,
 Nit*890.930.534, TARJ:9419, el nombre del cajero, el CUFE). Se deja tal cual,
-con su basura de OCR, porque es justo lo que el pipeline tiene que tolerar.
+con su basura de OCR, porque es justo lo que el pipeline tiene que tolerar. Solo el
+nombre del cajero se reemplazó por uno inventado (PEDRO PRUEBA), para no tener el de
+una persona real en el repo.
 """
 
 FACTURA_D1_REAL = """\
@@ -51,7 +53,7 @@ e defined 2 13,917. 16,773
 - 4 JO, CLIENTE: undefine e
 | SISTEMA POS ARS DE: NCR COLOMBIA LTDA [NIT],074-8 7 |
 OS Ñ - . FACTURADOR ELECTRONICO:E factura Cadena Nit*890.930.534 “|
-. pa ATENDIDO POR: RAUL TATIS 871527 > o
+. pa ATENDIDO POR: PEDRO PRUEBA 000001 > o
 Lo pa NUM ART. ENTREGADOS: 35, TRX: 2712 02 0183 |
 . $ Resolucion DIAN 18764094754937 de 20230624 Prefijo 6788
 l | DE 120742 HASTA 1999999 Vigencia 18 Hases : :

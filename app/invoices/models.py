@@ -15,6 +15,11 @@ class EstadoFactura(enum.StrEnum):
     error = "error"
 
 
+class MetodoFactura(enum.StrEnum):
+    texto = "texto"  # OCR local + texto anonimizado a Gemini (por defecto)
+    vision = "vision"  # la foto completa a Gemini, con autorización del usuario
+
+
 class Factura(Base):
     __tablename__ = "facturas"
 
@@ -26,18 +31,30 @@ class Factura(Base):
         Enum(EstadoFactura, name="estado_factura"),
         default=EstadoFactura.pendiente_validacion,
     )
-    # Texto que extrajo Tesseract, ya sin datos personales.
+    # Solo el bloque de productos (lo que se le envió a Gemini), anonimizado. El texto
+    # completo no se guarda: minimización de datos. None si no se pudo recortar.
     texto_ocr: Mapped[str | None] = mapped_column(Text)
+    # Cómo se obtuvieron los items_detectados que se muestran.
+    metodo: Mapped[MetodoFactura] = mapped_column(
+        Enum(MetodoFactura, name="metodo_factura"),
+        default=MetodoFactura.texto,
+        server_default=MetodoFactura.texto.value,
+    )
     # Ítems que propuso Gemini, para que el usuario los revise antes de confirmar.
     items_detectados: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    # Ítems que devolvió Gemini y se descartaron porque su descripción no aparece en el
+    # texto que se le envió (app/ocr/anclaje.py). Para la evaluación y para avisarle al
+    # usuario que revise si falta algo.
+    items_descartados: Mapped[int] = mapped_column(default=0, server_default="0")
     # Detectados en el encabezado con reglas locales (None si no se encontraron).
     supermercado: Mapped[str | None] = mapped_column(String(60))
     fecha_compra: Mapped[date | None] = mapped_column(Date)
     # True si a Gemini se le envió solo el bloque de productos; False si el texto
     # completo. Para evaluar el recorte; no se expone en la API.
     recortada: Mapped[bool] = mapped_column(default=False, server_default=false())
-    # Verificación de la factura completa: el TOTAL impreso (reglas locales) contra
-    # la suma de precio_total de los ítems detectados. None si no se pudo obtener.
+    # Verificación de la factura completa: el TOTAL impreso contra la suma de
+    # precio_total de los ítems detectados. None si no se pudo obtener. Con
+    # metodo="texto" lo leen las reglas locales del OCR; con "vision", Gemini en la foto.
     total_impreso: Mapped[float | None]
     total_calculado: Mapped[float | None]
     # True si los dos totales difieren más del 1 %: algún ítem se leyó mal o faltó.

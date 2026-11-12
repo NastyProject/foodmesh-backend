@@ -17,7 +17,13 @@ from app.ocr.normalizacion import (
     precios_cuadran,
 )
 from app.ocr.pipeline import procesar_factura
-from tests.conftest import ITEMS_FALSOS, imagen_factura, item_detectado, normalizador_falso
+from tests.conftest import (
+    ITEMS_FALSOS,
+    imagen_factura,
+    item_detectado,
+    normalizador_falso,
+    ocr_falso,
+)
 from tests.factura_d1 import BLOQUE_PRODUCTOS_D1, FACTURA_D1
 from tests.factura_d1_real import FACTURA_D1_REAL
 
@@ -58,12 +64,15 @@ def test_sin_contorno_de_papel_no_cambia_la_imagen():
 def test_pipeline_completo_con_normalizador_falso():
     resultado = procesar_factura(imagen_factura(), normalizador_falso)
     assert resultado.error is None
-    assert "LECHE" in resultado.texto_ocr
+    assert "LECHE" in resultado.texto_completo
     assert [i.nombre for i in resultado.items] == [i.nombre for i in ITEMS_FALSOS]
     assert all(i.origen == "ia" and not i.revisar for i in resultado.items)
-    # La imagen sintética no tiene encabezado de columnas: se envía el texto completo.
+    # La imagen sintética no tiene encabezado de columnas: no hay bloque, y se envían
+    # solo las líneas que parecen de productos (y sus vecinas), nunca el texto completo.
     assert not resultado.recortada
-    assert resultado.texto_enviado == resultado.texto_ocr
+    assert "LECHE" in resultado.texto_enviado and "PAN" in resultado.texto_enviado
+    # Lo que se guarda es lo mismo que se envió.
+    assert resultado.texto_guardado == resultado.texto_enviado
 
 
 def test_pipeline_envia_solo_el_bloque_de_productos(monkeypatch):
@@ -74,7 +83,7 @@ def test_pipeline_envia_solo_el_bloque_de_productos(monkeypatch):
         return []
 
     # Reemplazamos Tesseract por un texto fijo con la forma de una factura real.
-    monkeypatch.setattr(extraccion, "extraer_texto", lambda imagen: FACTURA_D1)
+    ocr_falso(monkeypatch, FACTURA_D1)
     resultado = procesar_factura(imagen_factura(), normalizador_espia)
 
     assert resultado.recortada
@@ -94,10 +103,10 @@ def test_pipeline_anonimiza_antes_de_normalizar():
         textos_recibidos.append(texto)
         return []
 
-    imagen = imagen_factura(["NIT 900123456-7", "LECHE ENTERA 4500"])
+    imagen = imagen_factura(["NIT 900123456-7", "LECHE ENTERA 4.500"])
     resultado = procesar_factura(imagen, normalizador_espia)
     assert "900123456" not in textos_recibidos[0]
-    assert "[NIT]" in resultado.texto_ocr
+    assert "[NIT]" in resultado.texto_completo
 
 
 def test_pipeline_con_imagen_en_blanco():
@@ -122,9 +131,10 @@ class ClienteGeminiFalso:
 
 def test_normalizar_items_usa_structured_output():
     cliente = ClienteGeminiFalso(
-        '{"items": [{"codigo": "7702001001234", "nombre": "Leche entera 1.1 L", "cantidad": 1,'
+        '{"items": [{"codigo": "7702001001234", "descripcion_impresa": "LECHE ALQ ENT 1100ML",'
+        ' "nombre": "Leche entera 1.1 L", "cantidad": 1,'
         ' "unidad": "unidad", "precio_unitario": 4500, "precio_total": 4500,'
-        ' "categoria": "lacteos"}]}'
+        ' "categoria": "lacteos", "nombre_incierto": false}]}'
     )
     items = normalizar_items("LECHE ALQ ENT 1100ML 4.500", cliente, "modelo-x")
 
@@ -168,7 +178,9 @@ def test_instrucciones_piden_verificar_precios():
     [
         (2, 4500, 9000, True),
         (1.25, 2500, 3125, True),  # producto por peso
-        (3, 3333, 10000, True),  # redondeo: diferencia menor al 1 %
+        (3, 3333, 10000, True),  # redondeo: $1 de diferencia
+        (0.535, 7990, 4275, True),  # producto por peso: 4,274.65 impreso como 4,275
+        (1, 3990, 3905, False),  # factura 3: el arroz, leído 3,905 en vez de 3,990
         (2, 4500, 6500, False),
         (1, 7350, 73506, False),  # código de IVA pegado al precio
         (1, None, 6500, True),  # sin precio unitario no hay con qué comparar
@@ -245,7 +257,11 @@ def test_instrucciones_traen_ejemplos_de_categorias():
     ("calculado", "impreso", "esperado"),
     [
         (130690, 130690, True),
-        (130000, 130690, True),  # 0.5 % de diferencia
+        (130689, 130690, True),  # $1 de diferencia: el máximo que se acepta
+        (130000, 130690, False),  # 0.5 %: antes pasaba con la tolerancia del 1 %
+        # Factura 3: el arroz era 3,990 y se leyó 3,905. La diferencia de $85 (0.9 %)
+        # pasaba como verificada con la tolerancia del 1 %.
+        (3190 + 2200 + 3905, 9380, False),
         (120000, 130690, False),
         (None, 130690, True),
         (130690, None, True),
@@ -264,10 +280,15 @@ def test_cuadran(calculado, impreso, esperado):
     ],
 )
 def test_pipeline_compara_total_impreso_con_calculado(monkeypatch, totales, requiere_revision):
-    monkeypatch.setattr(extraccion, "extraer_texto", lambda imagen: FACTURA_D1_REAL)
+    ocr_falso(monkeypatch, FACTURA_D1_REAL)
 
     def normalizador(texto):
-        return [item_detectado(precio_unitario=None, precio_total=t) for t in totales]
+        return [
+            item_detectado(
+                descripcion_impresa="DETERGENTE LT", precio_unitario=None, precio_total=t
+            )
+            for t in totales
+        ]
 
     resultado = procesar_factura(imagen_factura(), normalizador)
     assert resultado.total_impreso == 130690
@@ -285,7 +306,7 @@ def test_si_falla_la_normalizacion_pide_revision(monkeypatch):
     def normalizador_que_falla(texto):
         raise RuntimeError("Gemini no responde")
 
-    monkeypatch.setattr(extraccion, "extraer_texto", lambda imagen: FACTURA_D1_REAL)
+    ocr_falso(monkeypatch, FACTURA_D1_REAL)
     resultado = procesar_factura(imagen_factura(), normalizador_que_falla)
     assert resultado.total_impreso == 130690
     assert resultado.total_calculado is None

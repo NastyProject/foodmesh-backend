@@ -35,6 +35,25 @@ def aplicar_catalogo(db: Session, items: list[ItemPropuesto]) -> list[ItemPropue
     return resultado
 
 
+_LARGOS_GTIN = {8, 12, 13, 14}
+
+
+def es_gtin_valido(codigo: str) -> bool:
+    """True si el código es un GTIN (EAN-8, UPC-12, EAN-13, GTIN-14) con el dígito de
+    control correcto. Atrapa la mayoría de dígitos mal leídos por el OCR: en las
+    facturas reales, 18 de 19 EAN lo pasaban, y el que no, tenía un dígito mal leído.
+
+    Dígito de control: desde la derecha (sin contarlo), los dígitos se multiplican
+    alternadamente por 3 y por 1; el control es lo que le falta a la suma para llegar
+    a la siguiente decena.
+    """
+    if not codigo.isdigit() or len(codigo) not in _LARGOS_GTIN:
+        return False
+    *cuerpo, control = (int(d) for d in codigo)
+    suma = sum(d * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(cuerpo)))
+    return (10 - suma % 10) % 10 == control
+
+
 def guardar_producto(
     db: Session, codigo: str, nombre: str, categoria: str | None, unidad: str
 ) -> int:

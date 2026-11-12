@@ -162,7 +162,27 @@ def clave_cache(
     }
     # sort_keys: el mismo contenido siempre produce el mismo JSON, y por tanto el mismo hash.
     serializado = json.dumps(contenido, sort_keys=True, separators=(",", ":"))
-    return "recetas:" + hashlib.sha256(serializado.encode()).hexdigest()
+    # El hogar va también en claro, como prefijo, para poder borrar todas las claves de
+    # un hogar (invalidar_cache_hogar) sin conocer su inventario.
+    return f"{_prefijo_cache(hogar_id)}{hashlib.sha256(serializado.encode()).hexdigest()}"
+
+
+def _prefijo_cache(hogar_id: int) -> str:
+    return f"recetas:{hogar_id}:"
+
+
+def invalidar_cache_hogar(cache: redis.Redis | None, hogar_id: int) -> int:
+    """Borra las recetas en caché del hogar y su lock de generación. Devuelve cuántas
+    claves borró. Si Redis no responde, solo lo registra: la caché vence sola."""
+    if cache is None:
+        return 0
+    try:
+        claves = list(cache.scan_iter(match=f"{_prefijo_cache(hogar_id)}*"))
+        claves.append(_clave_lock(hogar_id))
+        return cache.delete(*claves)
+    except redis.RedisError as error:
+        logger.warning("Redis no disponible, no se invalidó la caché del hogar: %s", error)
+        return 0
 
 
 def _leer_cache(cache: redis.Redis | None, clave: str) -> list[RecetaOut] | None:

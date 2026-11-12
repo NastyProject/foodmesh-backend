@@ -4,6 +4,8 @@ Cada función recibe y devuelve una imagen (arreglo de numpy), sin efectos
 secundarios, para poder probarlas y evaluarlas por separado.
 """
 
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
 
@@ -18,6 +20,41 @@ def decodificar(datos: bytes) -> np.ndarray:
     if imagen is None:
         raise ValueError("Los datos no son una imagen válida")
     return imagen
+
+
+# --- Calidad de la foto (antes del OCR) ---
+
+# El enfoque se mide sobre la imagen reducida a este lado mayor: así el puntaje no
+# depende de la resolución de la cámara y un mismo umbral sirve para todas las fotos.
+LADO_MEDICION_ENFOQUE = 1000
+
+
+@dataclass
+class Calidad:
+    # Varianza del laplaciano: alta si hay bordes nítidos (texto enfocado), baja si la
+    # foto está movida o desenfocada. Una foto nítida de una factura da cientos o miles.
+    enfoque: float
+    ancho: int
+    alto: int
+
+
+def medir_calidad(imagen: np.ndarray) -> Calidad:
+    alto, ancho = imagen.shape[:2]
+    grises = a_grises(imagen)
+    escala = LADO_MEDICION_ENFOQUE / max(alto, ancho)
+    if escala < 1:
+        tamano = (round(ancho * escala), round(alto * escala))
+        grises = cv2.resize(grises, tamano, interpolation=cv2.INTER_AREA)
+    return Calidad(enfoque=float(cv2.Laplacian(grises, cv2.CV_64F).var()), ancho=ancho, alto=alto)
+
+
+def problema_de_calidad(calidad: Calidad, min_enfoque: float, min_lado_px: int) -> str | None:
+    """ "imagen_pequena", "imagen_borrosa" o None si la foto sirve para el OCR."""
+    if max(calidad.ancho, calidad.alto) < min_lado_px:
+        return "imagen_pequena"
+    if calidad.enfoque < min_enfoque:
+        return "imagen_borrosa"
+    return None
 
 
 def a_grises(imagen: np.ndarray) -> np.ndarray:

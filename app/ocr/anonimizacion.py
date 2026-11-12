@@ -6,6 +6,8 @@ código de producto, y no queremos borrar información útil.
 """
 
 import re
+import unicodedata
+from difflib import SequenceMatcher
 
 # Un número de documento, con o sin separadores de miles: 1.023.456.789, 52 123 456, 52123456
 _NUMERO_DOCUMENTO = r"(?:\d{1,3}(?:[. ]\d{3}){1,3}|\d{6,10})(?!\d)"
@@ -19,6 +21,20 @@ _DIGITO_OCR = r"[\dSOIlB]"
 
 _PATRONES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "[EMAIL]"),
+    # Email con la @ mal leída ("correopruebaéhotmail.com"): se reconoce por el dominio
+    # de un correo personal, también si el OCR leyó ".con".
+    (
+        re.compile(r"\S*(?:hotmail|gmail|outlook|yahoo|live|icloud)\.c[o0][mn]?\S*", re.IGNORECASE),
+        "[EMAIL]",
+    ),
+    # Barrio y dirección del cliente: se borra el resto del renglón.
+    # Sin \b al final: el OCR pega la etiqueta al dato ("DIRECCIONSCL 84 Bis", factura 16).
+    (re.compile(r"\b(BARRIO|DIRECCI[OÓ]N)[^\n]*", re.IGNORECASE), r"\1: [DIRECCION]"),
+    (re.compile(r"\bDIR\b\.?[ \t]*:[^\n]*", re.IGNORECASE), "DIR: [DIRECCION]"),
+    # "Tarjeta No.: ****1133", "NO. TARJ; ... 3064": con esas etiquetas se borra el
+    # resto del renglón, sin importar qué haya entre la etiqueta y los dígitos.
+    (re.compile(r"\bTARJETA[ \t]*N[O0o°º]\b\.?[^\n]*", re.IGNORECASE), "[TARJETA]"),
+    (re.compile(r"\bN[O0][.:]?[ \t]*TARJ\b[^\n]*", re.IGNORECASE), "[TARJETA]"),
     # CUFE con etiqueta: se borra el resto del renglón (el hash puede venir con errores de OCR).
     (re.compile(r"\bCUFE\b[^\n]*", re.IGNORECASE), "[CUFE]"),
     # NIT con etiqueta: "NIT 900.123.456-7", "Nit: 900123456-7", "N.I.T. 860007538".
@@ -68,18 +84,24 @@ _PATRONES: list[tuple[re.Pattern[str], str]] = [
         ),
         "[TELEFONO]",
     ),
-    # Tarjeta: "TARJ ************1234", "Tarjeta: XXXX XXXX 1234", "TARJ. DEBITO **1234"
+    # Tarjeta: "TARJ ************1234", "Tarjeta: XXXX XXXX 1234", "TARJ. DEBITO **1234",
+    # y las lecturas del OCR de "TARJ": "TAR):9999", "TARO: 1543", "TARI", "TAR]", "TAR|".
+    # Después de TAR se exige uno de esos caracteres (y que no siga una letra): así no
+    # se toma un producto como "TARRO 1250".
     (
-        re.compile(r"\bTARJ(?:ETA)?\b\.?[^\n\d*Xx#]{0,20}[*Xx# -]*\d{4}(?!\d)", re.IGNORECASE),
+        re.compile(
+            r"(?<![A-Z])TAR(?:JETA|[JIOl1)\]|])(?![A-Z])\.?[^\n\d*Xx#]{0,20}[*Xx# -]*\d{4}(?!\d)",
+            re.IGNORECASE,
+        ),
         "[TARJETA]",
     ),
     # Número enmascarado sin etiqueta: "************1234"
     (re.compile(r"[*Xx#]{4,}[ -]?\d{4}(?!\d)"), "[TARJETA]"),
     # Datos de la transacción con datáfono: "Recibo: 001234", "Ápro: 267787", "RRN 123456789012",
-    # "TRX: 2712 02 0183". RAN es como el OCR suele leer RRN.
+    # "RRN-442167", "TRX: 2712 02 0183". RAN es como el OCR suele leer RRN.
     (
         re.compile(
-            rf"\b(?:Recibo|RRN|RAN)\b\.?{_SEP}(?:No\.?|#)?{_SEP}[:.]?{_SEP}\d{{4,}}"
+            rf"\b(?:Recibo|RRN|RAN)\b\.?{_SEP}(?:No\.?|#)?{_SEP}[:.-]?{_SEP}\d{{4,}}"
             rf"|\bTRX\b\.?{_SEP}[:.]?{_SEP}\d[\d \t]{{2,}}\d"
             rf"|(?<!\w)[AÁ]pro(?:baci[oó]n)?\b\.?{_SEP}(?:No\.?|#)?{_SEP}[:.]?{_SEP}"
             r"(?=[A-Z]*\d)[A-Z\d]{4,}",
@@ -87,12 +109,37 @@ _PATRONES: list[tuple[re.Pattern[str], str]] = [
         ),
         "[TRANSACCION]",
     ),
-    # Nombre del cajero: se borra el resto del renglón. "ATENDIDO POR: JUAN PEREZ", "CAJERO 05 ANA"
+    # Nombre de quien atendió: se borra el resto del renglón. "ATENDIDO POR: JUAN PEREZ",
+    # "CAJERO 05 ANA", "VEND: ANA RUIZ", "VENDEDOR: ANA RUIZ".
     (
-        re.compile(r"\b(ATENDIDO[ \t]+POR|CAJER[OA])\b[^\n]*", re.IGNORECASE),
+        # ATENDIDO solo: el OCR lee "Atendido Pur" (factura 20).
+        re.compile(r"\b(ATENDIDO(?:[ \t]+P[OU]R)?|CAJER[OA]|VEND(?:EDOR)?)\b[^\n]*", re.IGNORECASE),
         r"\1: [NOMBRE]",
     ),
 ]
+
+# "CLIENTE: <nombre> [CEDULA]": se borra el resto del renglón, salvo que sea
+# "Consumidor Final" (con sus lecturas de OCR: "Consuuidor Final", "Consuaidor-Final")
+# o el "undefined" que imprime el sistema del almacén cuando no hay cliente.
+_CLIENTE = re.compile(r"\b(CLIENTE)\b[ \t]*[:.]?[ \t]*([^\n]*)", re.IGNORECASE)
+_SIN_NOMBRE = ("CONSUMIDOR", "UNDEFINED")
+_PARECIDO_SIN_NOMBRE = 0.7
+
+
+def _sin_nombre(resto: str) -> bool:
+    """True si lo que sigue a CLIENTE no es un nombre: solo marcadores que ya puso la
+    anonimización ("[CEDULA]"), "Consumidor Final" o "undefined"."""
+    palabras = re.findall(r"[A-Za-z]+", re.sub(r"\[[A-Z]+\]", " ", resto))
+    return not palabras or any(
+        SequenceMatcher(None, palabras[0].upper(), objetivo).ratio() >= _PARECIDO_SIN_NOMBRE
+        for objetivo in _SIN_NOMBRE
+    )
+
+
+def _cliente(coincidencia: re.Match[str]) -> str:
+    if _sin_nombre(coincidencia[2]):
+        return coincidencia[0]
+    return f"{coincidencia[1]}: [NOMBRE]"
 
 
 # Pedazos de hash (CUFE) sin etiqueta. El OCR los parte en renglones y les mete letras
@@ -114,7 +161,33 @@ def _parece_hash(palabra: str) -> bool:
     )
 
 
+# La etiqueta CLIENTE mal leída por el OCR ("Clánte", "Cl1ente"). Una palabra que se
+# le parece puede ser un producto ("SALSA CALIENTE 3.500"), así que estas variantes
+# solo cuentan al inicio del renglón (tras basura corta del OCR) y si el renglón no
+# trae un precio ni un código: un producto siempre trae alguno de los dos.
+_CLIENTE_OCR = re.compile(
+    r"(?m)^(?P<prefijo>[^\w\n]*(?:\w{1,2}[^\w\n]+){0,2})(?P<etiqueta>C\w{4,7})\b"
+    r"[ \t]*[:.]?[ \t]*(?P<resto>[^\n]*)"
+)
+_PARECIDO_CLIENTE = 0.7
+_PRECIO_O_CODIGO = re.compile(r"\d{1,3}[.,]\d{3}(?!\d)|\d{8,}")
+
+
+def _cliente_mal_leido(coincidencia: re.Match[str]) -> str:
+    # Sin tildes y en mayúsculas: "Clánte" -> "CLANTE".
+    etiqueta = unicodedata.normalize("NFKD", coincidencia["etiqueta"]).encode("ascii", "ignore")
+    if (
+        SequenceMatcher(None, etiqueta.decode().upper(), "CLIENTE").ratio() < _PARECIDO_CLIENTE
+        or _PRECIO_O_CODIGO.search(coincidencia["resto"])
+        or _sin_nombre(coincidencia["resto"])
+    ):
+        return coincidencia[0]
+    return f"{coincidencia['prefijo']}{coincidencia['etiqueta']}: [NOMBRE]"
+
+
 def anonimizar(texto: str) -> str:
     for patron, reemplazo in _PATRONES:
         texto = patron.sub(reemplazo, texto)
+    texto = _CLIENTE.sub(_cliente, texto)
+    texto = _CLIENTE_OCR.sub(_cliente_mal_leido, texto)
     return _PALABRA_LARGA.sub(lambda m: "[CUFE]" if _parece_hash(m[0]) else m[0], texto)
