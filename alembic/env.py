@@ -12,6 +12,7 @@ config = context.config
 from app.core.config import get_settings
 from app.core.db import Base
 from app.catalog import models as catalog_models  # noqa: F401
+from app.governance import models as governance_models  # noqa: F401
 from app.inventory import models  # noqa: F401
 from app.invoices import models as invoices_models  # noqa: F401
 from app.preferences import models as preferences_models  # noqa: F401

@@ -78,7 +78,7 @@ def test_quita_datos_de_pago_y_de_la_factura(texto, esperado):
             "o «| [TARJETA] [TRANSACCION] [TRANSACCION] - --..",
         ),
         ("“| Ápro: 267787 a e", "“| [TRANSACCION] a e"),
-        (". pa ATENDIDO POR: RAUL TATIS 871527 > o", ". pa ATENDIDO POR: [NOMBRE]"),
+        (". pa ATENDIDO POR: PEDRO PRUEBA 000001 > o", ". pa ATENDIDO POR: [NOMBRE]"),
         (
             "Lo pa NUM ART. ENTREGADOS: 35, TRX: 2712 02 0183 |",
             "Lo pa NUM ART. ENTREGADOS: 35, [TRANSACCION] |",

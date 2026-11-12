@@ -12,6 +12,8 @@ from sqlalchemy import delete, select
 
 from app.auth.security import get_token_claims
 from app.core.db import SessionLocal
+from app.governance.models import Consentimiento, RegistroAuditoria
+from app.governance.service import VERSION_POLITICA_VIGENTE, hash_sub
 from app.inventory.models import ItemInventario
 from app.main import app
 from app.users.models import Hogar, Usuario
@@ -35,11 +37,17 @@ def client_con_token():
         yield c
     app.dependency_overrides.clear()
 
-    # Limpieza en orden de FKs: ítems -> usuarios -> hogares
+    # Limpieza en orden de FKs: ítems -> consentimientos -> usuarios -> hogares
     with SessionLocal() as db:
         usuarios = db.scalars(select(Usuario).where(Usuario.auth0_sub.startswith(PREFIJO_SUB)))
+        usuarios = list(usuarios)
         hogares = [u.hogar_id for u in usuarios]
         db.execute(delete(ItemInventario).where(ItemInventario.hogar_id.in_(hogares)))
+        db.execute(
+            delete(Consentimiento).where(Consentimiento.usuario_id.in_([u.id for u in usuarios]))
+        )
+        hashes = [hash_sub(u.auth0_sub) for u in usuarios]
+        db.execute(delete(RegistroAuditoria).where(RegistroAuditoria.usuario_sub_hash.in_(hashes)))
         db.execute(delete(Usuario).where(Usuario.auth0_sub.startswith(PREFIJO_SUB)))
         db.execute(delete(Hogar).where(Hogar.id.in_(hogares)))
         db.commit()
@@ -76,7 +84,16 @@ def test_sin_email_el_hogar_usa_el_sub(client_con_token):
         assert db.get(Hogar, datos["hogar_id"]).nombre == f"Hogar de {claims['sub']}"
 
 
+def _aceptar_consentimiento(client) -> None:
+    respuesta = client.post(
+        "/consentimiento",
+        json={"acepta_tratamiento": True, "version_politica": VERSION_POLITICA_VIGENTE},
+    )
+    assert respuesta.status_code == 200
+
+
 def test_dos_usuarios_no_comparten_inventario(client_con_token):
     client_con_token.usar_claims(_claims())
+    _aceptar_consentimiento(client_con_token)
     respuesta = client_con_token.post("/inventario", json={"nombre": "Arroz", "cantidad": 1})
     assert respuesta.status_code == 201

@@ -3,10 +3,12 @@
 ¡Qué más! Te dejo aquí lo que necesitas para arrancar con el frontend. El backend ya tiene **login con Auth0**, **inventario**, **facturas con OCR**, **preferencias del hogar** y **recetas sugeridas** funcionando, así que ya puedes conectarte a algo real.
 
 > 🆕 **Novedades de esta versión** (si ya venías usando el backend):
+> - **Facturas** (sección 5): los ítems traen **`descripcion_impresa`** (lo que dice la factura, para mostrarlo junto al nombre) y **`nombre_incierto`**, que se resalta igual que `revisar`. La factura trae **`metodo`** (`"texto"` o `"vision"`). `texto_ocr` ahora es **solo el bloque de productos**, o `null`. `requiere_revision` es más estricto: el total debe cuadrar exacto. Y hay un endpoint nuevo, **`POST /facturas/{id}/reprocesar-con-imagen`**, para el botón **"Reintentar con la imagen"**.
+> - ⚠️ **Consentimiento obligatorio** (cambia el comportamiento): mientras el usuario no acepte la política de tratamiento de datos, inventario, facturas, preferencias y recetas responden **`403` con `detail.codigo = "consentimiento_requerido"`**. Al recibirlo, muestra la **pantalla de consentimiento**. Los usuarios que ya existían también deben aceptarlo. Además hay endpoints para **exportar** y **borrar la cuenta**. Todo está en la sección 7.
 > - **Preferencias del hogar** (`GET` / `PUT /preferencias`) y **recetas sugeridas** (`POST /recomendaciones/recetas`) con botón de "¿te sirvió?". Todo está en la sección 6.
 > - Recetas: ya hay botón de **"otras recetas"** (`{"nuevas": true}`), y si no queda ninguna receta válida llega una **lista vacía con un `mensaje`** para mostrar (no es un error). Ver sección 6.
 > - Hay un servicio nuevo en Docker: corre `docker compose up -d db redis` en lugar de solo `db` (sección 2). Si no levantas Redis, el backend funciona igual, pero sin caché.
-> - Después de hacer `git pull`: `pip install -r requirements-dev.txt` (hay dependencias nuevas), `alembic upgrade head` (hay tablas nuevas) y vuelve a generar los tipos (sección 7).
+> - Después de hacer `git pull`: `pip install -r requirements-dev.txt` (hay dependencias nuevas), `alembic upgrade head` (hay tablas nuevas) y vuelve a generar los tipos (sección 8).
 >
 > De la versión anterior: endpoints de facturas (sección 5), categorías como lista cerrada (sección 4), `es_alimento` y el filtro `GET /inventario?solo_alimentos=true`.
 
@@ -21,6 +23,7 @@
 | Subir factura + OCR, revisar y confirmar | ✅ Listo |
 | Preferencias del hogar (dieta, alergias, gustos) | ✅ Listo |
 | Recomendación de recetas | ✅ Listo |
+| Consentimiento, exportar y borrar la cuenta (Ley 1581) | ✅ Listo |
 | Demanda agregada (vista supermercado) | ⏳ Pendiente |
 
 Cada usuario pertenece a un **hogar**, y solo ve el inventario de su hogar. El frontend **nunca** envía el `hogar_id`: el backend lo saca del token.
@@ -109,7 +112,7 @@ Te recomiendo envolver esto en una función `apiFetch` única, para no repetirlo
 
 ## 4. Endpoints disponibles
 
-Todos (menos `/health`) requieren `Authorization: Bearer <token>`.
+Todos (menos `/health`) requieren `Authorization: Bearer <token>`. Los de inventario, facturas, preferencias y recetas requieren además que el usuario haya **aceptado el tratamiento de datos** (si no, `403`, ver sección 7).
 
 | Método | Ruta | Qué hace | Respuesta |
 |---|---|---|---|
@@ -120,14 +123,19 @@ Todos (menos `/health`) requieren `Authorization: Bearer <token>`.
 | GET | `/inventario/{id}` | Un ítem | `200` / `404` |
 | PATCH | `/inventario/{id}` | Edita solo los campos que mandes | `200` / `404` |
 | DELETE | `/inventario/{id}` | Borra un ítem | `204` / `404` |
-| POST | `/facturas` | Sube la foto de una factura y la procesa (OCR + IA) | `201` / `413` / `415` |
+| POST | `/facturas` | Sube la foto de una factura y la procesa (OCR + IA) | `201` / `413` / `415` / `422` (foto borrosa) |
 | GET | `/facturas` | Lista las facturas del hogar, la más reciente primero | `200` |
 | GET | `/facturas/{id}` | Una factura, con sus ítems detectados | `200` / `404` |
 | POST | `/facturas/{id}/confirmar` | Pasa al inventario los ítems que revisó el usuario | `201` / `404` / `409` / `422` |
+| POST | `/facturas/{id}/reprocesar-con-imagen` | Vuelve a leer la factura enviando la **foto** a la IA (con permiso del usuario) | `200` / `404` / `409` / `422` / `503` |
 | GET | `/preferencias` | Preferencias del hogar (o las de por defecto, si nunca las guardó) | `200` |
 | PUT | `/preferencias` | Guarda las preferencias (reemplaza todas) | `200` / `422` |
 | POST | `/recomendaciones/recetas` | Sugiere hasta 3 recetas con lo que hay en el inventario | `201` / `409` / `503` |
 | POST | `/recomendaciones/{id}/feedback` | Guarda si una receta le sirvió al usuario | `204` / `404` / `422` |
+| GET | `/consentimiento` | Estado del consentimiento del usuario y versión vigente de la política | `200` |
+| POST | `/consentimiento` | Acepta, actualiza o revoca el consentimiento | `200` / `422` |
+| GET | `/cuenta/exportar` | Todos los datos del hogar del usuario, en JSON | `200` |
+| DELETE | `/cuenta` | Borra la cuenta. Body obligatorio `{"confirmar": "ELIMINAR"}` | `204` / `422` |
 
 ### Formas de los datos
 
@@ -195,11 +203,13 @@ Solo `nombre` y `cantidad` son obligatorios. `cantidad` debe ser mayor que 0, y 
 | Código | Significa | Qué hacer en la UI |
 |---|---|---|
 | `401` | Sin token o token inválido/vencido | Mandar a login |
+| `403` con `detail.codigo = "consentimiento_requerido"` | El usuario no ha aceptado (o revocó) el tratamiento de datos | Mostrar la pantalla de consentimiento (sección 7) y, al aceptar, repetir la petición |
 | `404` | El ítem no existe (o es de otro hogar) | Mensaje de "no encontrado" |
 | `409` | En facturas: ya fue confirmada. En recetas: no hay alimentos en el inventario | Facturas: "esta factura ya está en tu inventario". Recetas: mostrar el `detail` con botones a "agregar producto" y "subir factura" |
 | `413` | La imagen pesa más de 10 MB | Pedir una foto más liviana (o comprimirla en el front antes de subirla) |
 | `415` | El archivo no es JPEG, PNG ni WebP, o no es una imagen | Pedir otra foto |
 | `422` | Datos inválidos (ej. cantidad negativa, categoría fuera de la lista) | Mostrar el error en el formulario. El detalle viene en `detail` |
+| `422` con `detail.codigo = "imagen_borrosa"`, `"imagen_ilegible"` o `"imagen_pequena"` | Al subir una factura: la foto no se puede leer | Mostrar `detail.mensaje` y `detail.consejo`, y un botón para tomar la foto otra vez (sección 5) |
 | `503` | La IA de recetas no respondió | Mostrar el `detail` y un botón de "intentar de nuevo" |
 
 ---
@@ -227,6 +237,29 @@ const res = await fetch(`${import.meta.env.VITE_API_URL}/facturas`, {
 });
 ```
 
+**Foto borrosa o muy pequeña:** antes de leerla, el backend revisa que la foto esté enfocada y tenga suficiente resolución. Si no la cumple, responde `422` sin procesarla:
+
+```json
+// 422
+{
+  "detail": {
+    "codigo": "imagen_borrosa",
+    "mensaje": "La foto está borrosa y no se puede leer bien.",
+    "consejo": "Tómala de nuevo con buena luz, sin moverte y tocando la pantalla para enfocar. Acércate a la factura; si es muy larga, toma solo la parte de los productos."
+  }
+}
+```
+
+- `codigo` puede ser:
+  - `"imagen_borrosa"`: la foto está muy desenfocada;
+  - `"imagen_ilegible"`: la foto se ve bien pero el texto no se pudo leer (sombras, reflejos, papel arrugado o tomado en ángulo). Se detecta después de leer el texto y antes de la IA, así que tarda un par de segundos más que los otros dos;
+  - `"imagen_pequena"`: poca resolución, por ejemplo una captura de pantalla o una imagen reenviada por chat.
+- Los tres traen su propio `mensaje` y `consejo`: muéstralos tal cual, sin escribir textos por `codigo` en el front.
+- Muestra `mensaje` como título y `consejo` debajo, con un botón **"Tomar otra foto"** que vuelva a abrir la cámara. Distingue este `422` por `detail.codigo`: no es un error de formulario.
+- La factura **no** se crea, así que no hay nada que limpiar.
+
+**Si no se encuentran productos en el texto:** la factura se crea en `estado: "error"`, con el mensaje *"No encontramos los productos en el texto de la factura. Puedes reintentar leyéndola con la imagen."*. Ofrece ahí el botón **"Reintentar con la imagen"** (ver abajo), además de la opción de agregar los ítems a mano.
+
 ### Factura que devuelve la API
 
 ```json
@@ -238,10 +271,12 @@ const res = await fetch(`${import.meta.env.VITE_API_URL}/facturas`, {
   "total_impreso": 130690,
   "total_calculado": 130690,
   "requiere_revision": false,
-  "texto_ocr": "…texto leído de la foto, sin datos personales…",
+  "texto_ocr": "…solo el bloque de productos leído por el OCR…",
+  "metodo": "texto",
   "items_detectados": [
     {
       "codigo": "7700304928750",
+      "descripcion_impresa": "ARANDANOS--125",
       "nombre": "Arándanos 125 g",
       "cantidad": 1,
       "unidad": "unidad",
@@ -250,10 +285,12 @@ const res = await fetch(`${import.meta.env.VITE_API_URL}/facturas`, {
       "categoria": "frutas_verduras",
       "origen": "ia",
       "revisar": false,
+      "nombre_incierto": false,
       "es_alimento": true
     },
     {
       "codigo": "7700304824342",
+      "descripcion_impresa": "VARSO. BRILLA",
       "nombre": "Varsol brillante",
       "cantidad": 1,
       "unidad": "unidad",
@@ -262,6 +299,7 @@ const res = await fetch(`${import.meta.env.VITE_API_URL}/facturas`, {
       "categoria": "aseo_hogar",
       "origen": "catalogo",
       "revisar": false,
+      "nombre_incierto": false,
       "es_alimento": false
     }
   ],
@@ -275,21 +313,25 @@ const res = await fetch(`${import.meta.env.VITE_API_URL}/facturas`, {
 | Campo | Qué es | Qué hacer en la UI |
 |---|---|---|
 | `estado` | `pendiente_validacion` (lista para revisar), `confirmada` (ya está en el inventario) o `error` (falló el OCR o la IA) | Con `error`, muestra el mensaje de `error` y deja que el usuario agregue los ítems a mano: **también se puede confirmar** |
-| `supermercado`, `fecha_compra` | Detectados en la factura. Pueden venir `null` | Mostrarlos en el encabezado de la pantalla |
-| `total_impreso` | El TOTAL que trae la factura. `null` si no se pudo leer | |
+| `supermercado`, `fecha_compra` | Detectados en la factura. Pueden venir `null`. Las tiendas aliadas de Surtimax llegan como `"Surtimax (aliado)"`; también puede venir un comercio que no es supermercado, como `"Dollarcity"` | Mostrarlos en el encabezado de la pantalla |
+| `total_impreso` | El TOTAL que trae la factura. `null` si no se pudo leer. Con `metodo: "vision"`, es el que la IA leyó en la foto | |
 | `total_calculado` | Suma de `precio_total` de los ítems detectados | |
-| `requiere_revision` | `true` si los dos totales difieren más del 1 %, o si no se pudieron comparar (no se leyó el TOTAL, o falló la IA) | Mostrar un aviso arriba: "El total no coincide (impreso $130.690, detectado $118.000): revisa que no falte ningún producto" |
-| `texto_ocr` | Lo que leyó el OCR, ya sin datos personales | Opcional: un "ver texto leído" plegable, útil en la demo |
+| `requiere_revision` | `true` si los dos totales no cuadran **exacto** (se acepta $1 de diferencia), o si no se pudieron comparar (no se leyó el TOTAL, o falló la IA) | Mostrar un aviso arriba: "El total no coincide (impreso $130.690, detectado $118.000): revisa que no falte ningún producto", **y ofrecer "Reintentar con la imagen"** (ver abajo) |
+| `items_descartados` | Cuántos productos propuso la IA que **no** están en el texto leído (los inventó a partir de texto dañado) y se descartaron | Si es mayor que 0, un aviso suave: "Revisa que no falte ningún producto" |
+| `texto_ocr` | Lo que se le envió a la IA: **solo el bloque de productos** o, si no se encontró, solo las líneas que parecen de productos. `null` si no había ninguna. El resto del texto (con los datos del cliente) nunca se guarda ni se envía | Opcional: un "ver texto leído" plegable, útil en la demo |
+| `metodo` | `"texto"`: los ítems salieron del texto del OCR. `"vision"`: se reprocesó con la foto | Opcional: una etiqueta "leída con la imagen" |
 
 **Campos de cada ítem detectado:**
 
 | Campo | Qué es | Qué hacer en la UI |
 |---|---|---|
-| `codigo` | Código de barras (EAN) o PLU. Puede ser `null` | No mostrarlo (o en gris), pero **devolverlo al confirmar** |
+| `codigo` | Código de barras (EAN) o PLU. Puede ser `null`: también cuando la IA propuso uno que no está en el texto leído, porque lo habría inventado | No mostrarlo (o en gris), pero **devolverlo al confirmar** |
+| `descripcion_impresa` | La descripción tal como está impresa en la factura, sin corregir (`"LECHE ALQ ENT 1100ML"`). `null` en facturas viejas | **Mostrarla junto al `nombre`**, más pequeña o en gris ("en la factura: LECHE ALQ ENT 1100ML"). Así el usuario ve si la IA interpretó bien o inventó algo |
 | `precio_unitario`, `precio_total` | En pesos, sin decimales. Pueden ser `null`. **Ya no existe el campo `precio`** | Mostrar el `precio_total` del renglón |
 | `categoria` | Una de la lista de la sección 4 | Precargar el `<select>` |
 | `origen` | `catalogo`: el nombre y la categoría salieron de un producto que algún usuario ya confirmó antes (más confiable). `ia`: los propuso la IA | Opcional: un ícono pequeño para distinguirlos |
 | `revisar` | `true` si cantidad × precio unitario no da el precio total: algún número se leyó mal | **Resaltar el renglón** (borde amarillo, ⚠️) |
+| `nombre_incierto` | `true` si una parte del nombre era ilegible y la IA no la completó. Lo que falta viene marcado con "…" (ej. `"Huevos de c…"`) | **Resaltar el nombre** para que el usuario lo complete ("Huevos de codorniz") |
 | `es_alimento` | Calculado de la categoría, como en el inventario | Opcional: agrupar comida / otros |
 
 ### Confirmar (`POST /facturas/{id}/confirmar`)
@@ -311,9 +353,30 @@ El body es una **lista** de ítems con la misma forma de `POST /inventario`, má
 
 - Devuelve `201` con la lista de ítems creados en el inventario (con la forma de "Ítem que devuelve la API").
 - Manda el `codigo` tal como vino en el ítem detectado (o `null` si no tenía). Con él el backend aprende: la próxima vez que alguien compre ese producto, sale con el nombre y la categoría que confirmó el usuario (`origen: "catalogo"`).
+- El catálogo es compartido entre todos los hogares, así que solo aprende cuando la factura es confiable: el total cuadró (`requiere_revision: false`), el ítem no estaba marcado `revisar` ni `nombre_incierto`, y el código es un EAN válido. En los demás casos, el ítem entra al inventario igual; solo no se agrega al catálogo. No tienes que hacer nada distinto en el front.
 - Es **todo o nada**: si un ítem es inválido (`422`), no se crea ninguno y la factura sigue pendiente.
 - Confirmar dos veces la misma factura responde `409`.
-- No mandes `precio_unitario`, `precio_total`, `origen`, `revisar` ni `es_alimento`: el inventario no los guarda y se ignoran.
+- No mandes `descripcion_impresa`, `precio_unitario`, `precio_total`, `origen`, `revisar`, `nombre_incierto` ni `es_alimento`: el inventario no los guarda y se ignoran.
+
+### Reintentar con la imagen (`POST /facturas/{id}/reprocesar-con-imagen`)
+
+Algunos formatos de factura (por ejemplo los de varias líneas por producto) el OCR no los lee bien. En esos casos, la IA puede leer directamente la **foto**. Como la foto lleva **todos** los datos de la factura (nombre, cédula, tarjeta…), solo se hace si el usuario lo autoriza.
+
+- **Cuándo ofrecerlo:** cuando `requiere_revision` es `true` (o el `estado` es `error`), con un botón **"Reintentar con la imagen"** en la pantalla de validación.
+- **Qué decirle al usuario antes**, en un diálogo de confirmación: *"Vamos a enviar la foto completa de tu factura a Google (Gemini) para leerla de nuevo. La foto puede incluir tu nombre, documento y datos de pago. ¿Quieres continuar?"*. Botones "Enviar la foto" / "Cancelar".
+- Si acepta:
+
+```json
+// POST /facturas/{id}/reprocesar-con-imagen
+{ "acepto_enviar_imagen": true }
+```
+
+- Si no viene `true`, responde `422` y la foto no sale.
+- Responde `200` con la factura actualizada: `items_detectados` nuevos, `metodo: "vision"`, y `total_impreso`, `total_calculado` y `requiere_revision` recalculados. Vuelve a mostrar la pantalla de validación con esos ítems: el usuario igual revisa y confirma.
+- Con `metodo: "vision"`, el `total_impreso` es el que la IA **leyó en la foto**, no el del OCR. A veces el OCR leyó mal justo esa línea, así que el número puede cambiar respecto al de antes. Si la IA no pudo leer el TOTAL, llega `null` y `requiere_revision: true`.
+- Tarda unos segundos, como subir la factura: muestra un "procesando…".
+- `409` si la factura ya está confirmada o su imagen ya no está (se borra al confirmar). `503` si la IA no respondió: la factura queda como estaba.
+- Cada autorización queda en el registro de auditoría.
 
 ---
 
@@ -426,7 +489,77 @@ Pon en cada tarjeta un 👍 / 👎 de "¿te sirvió esta receta?". Es la métric
 
 ---
 
-## 7. Tipos de TypeScript automáticos
+## 7. Privacidad: consentimiento, exportar y borrar la cuenta
+
+Esto implementa el modelo de gobernanza de datos (Ley 1581 de 2012).
+
+### Consentimiento (`GET` / `POST /consentimiento`)
+
+Antes de usar la app, el usuario debe aceptar la política de tratamiento de datos. Mientras no lo haga, **todos** los endpoints con datos del hogar responden:
+
+```json
+// 403
+{
+  "detail": {
+    "codigo": "consentimiento_requerido",
+    "mensaje": "Debes aceptar la política de tratamiento de datos para usar FoodMesh.",
+    "version_politica_vigente": "1.0"
+  }
+}
+```
+
+Quedan libres `/me`, `/health`, `/consentimiento` y los de `/cuenta`.
+
+**Cómo manejarlo:** en tu cliente HTTP, si llega un `403` con `detail.codigo === "consentimiento_requerido"`, redirige a la pantalla de consentimiento. Distingue por `codigo`, no solo por el `403`. También puedes llamar a `GET /consentimiento` justo después del login y mostrar la pantalla si `acepta_tratamiento` es `false`.
+
+```json
+// GET /consentimiento (si nunca respondió, todo en false / null)
+{
+  "acepta_tratamiento": true,
+  "acepta_analitica_agregada": false,
+  "version_politica": "1.0",
+  "otorgado_en": "2026-11-11T16:30:00Z",
+  "actualizado_en": "2026-11-11T16:30:00Z",
+  "version_politica_vigente": "1.0"
+}
+```
+
+Para aceptar (también para cambiar la analítica o revocar):
+
+```json
+// POST /consentimiento
+{
+  "acepta_tratamiento": true,          // obligatorio para usar la app
+  "acepta_analitica_agregada": false,  // opcional: datos anónimos en señales de demanda para supermercados
+  "version_politica": "1.0"            // la que le mostraste (usa version_politica_vigente)
+}
+```
+
+- La pantalla debe tener **dos casillas separadas**: el tratamiento (obligatorio) y la analítica agregada (opcional, **desmarcada por defecto**). No las juntes en una sola.
+- Con `acepta_tratamiento: false`, el consentimiento queda **revocado**: la app vuelve a responder `403` hasta que lo acepte de nuevo. Ponlo en la pantalla de ajustes.
+- Si `version_politica_vigente` cambia, conviene volver a mostrar la política.
+
+### Exportar mis datos (`GET /cuenta/exportar`)
+
+Devuelve un JSON con todo: usuario, hogar, consentimiento, preferencias, inventario, facturas (sin imágenes) y recomendaciones. Funciona aunque el usuario no haya aceptado el consentimiento. Ofrécelo como un botón **"Descargar mis datos"** que guarde el JSON como archivo. De los demás miembros del hogar solo viene cuántos son (`hogar.otros_miembros`), no sus datos.
+
+### Borrar mi cuenta (`DELETE /cuenta`)
+
+```json
+// DELETE /cuenta: body obligatorio, si no responde 422
+{ "confirmar": "ELIMINAR" }
+```
+
+- Pídele al usuario que **escriba "ELIMINAR"** en un campo antes de habilitar el botón, y envía exactamente ese texto.
+- Si es el único miembro del hogar, se borra **todo el hogar**: inventario, facturas, preferencias y recetas. Si hay más miembros, solo se borra su usuario, y el hogar sigue para los demás.
+- Responde `204`. Después **cierra la sesión** (logout de Auth0) y manda a la pantalla de inicio.
+- ⚠️ **Limitación**: la identidad en **Auth0 no se borra**. Si la persona vuelve a iniciar sesión con la misma cuenta, el backend le crea un usuario y un hogar **nuevos y vacíos**, sin consentimiento. Para borrar también su login hay que hacerlo a mano en el panel de Auth0 (o, a futuro, con la Management API). Díselo al usuario en la pantalla de confirmación.
+
+Cada aceptación o cambio del consentimiento, cada exportación y cada borrado quedan en un registro de auditoría. Ese registro guarda un hash del usuario, no su identificador.
+
+---
+
+## 8. Tipos de TypeScript automáticos
 
 No escribas los tipos a mano: se generan desde el backend, y así nunca quedan desincronizados.
 
@@ -439,27 +572,29 @@ Vuelve a correrlo cada vez que te avise que cambió algún endpoint. Si quieres,
 
 ---
 
-## 8. Pantallas para ir arrancando
+## 9. Pantallas para ir arrancando
 
 Lo que ya puedes hacer contra el backend real:
 
 1. **Login / logout** con Auth0.
-2. **Inventario**: lista de ítems, resaltando los que vencen en los próximos 3 días. Con un filtro "solo alimentos" (`?solo_alimentos=true`) o pestañas comida / otros.
-3. **Crear y editar ítem**: formulario con nombre, categoría (un `<select>` con la lista cerrada), cantidad, unidad y fecha de vencimiento.
-4. **Borrar ítem**, con confirmación.
-5. **Subir factura**: tomar foto o subir imagen y mostrar un "procesando…" (tarda unos segundos).
-6. **Validar factura**: la lista de ítems detectados, editable, con los renglones `revisar: true` resaltados y el aviso de `requiere_revision` arriba. El usuario corrige, agrega fechas de vencimiento y confirma. Es la pantalla más importante de la demo.
-7. **Historial de facturas** (`GET /facturas`): supermercado, fecha, total y estado; las pendientes se pueden abrir para terminar de validarlas.
-8. **Preferencias**: dieta, alergias (checkboxes), lo que no le gusta, porciones y tiempo máximo. Conviene pedirlas en el onboarding, justo después del primer login.
-9. **Recetas sugeridas**: hasta 3 tarjetas con ingredientes ("lo tienes" / "te falta") y pasos, destacando los productos próximos a vencer, con el aviso de alergias visible, el 👍 / 👎 en cada una y un botón "Otras recetas". Ojo con el estado de lista vacía (`mensaje`).
+2. **Consentimiento** (justo después del login, y siempre que llegue `consentimiento_requerido`): la política, una casilla obligatoria para el tratamiento y otra opcional para la analítica agregada.
+3. **Inventario**: lista de ítems, resaltando los que vencen en los próximos 3 días. Con un filtro "solo alimentos" (`?solo_alimentos=true`) o pestañas comida / otros.
+4. **Crear y editar ítem**: formulario con nombre, categoría (un `<select>` con la lista cerrada), cantidad, unidad y fecha de vencimiento.
+5. **Borrar ítem**, con confirmación.
+6. **Subir factura**: tomar foto o subir imagen y mostrar un "procesando…" (tarda unos segundos).
+7. **Validar factura**: la lista de ítems detectados, editable, con los renglones `revisar: true` resaltados y el aviso de `requiere_revision` arriba. El usuario corrige, agrega fechas de vencimiento y confirma. Es la pantalla más importante de la demo.
+8. **Historial de facturas** (`GET /facturas`): supermercado, fecha, total y estado; las pendientes se pueden abrir para terminar de validarlas.
+9. **Preferencias**: dieta, alergias (checkboxes), lo que no le gusta, porciones y tiempo máximo. Conviene pedirlas en el onboarding, justo después del primer login.
+10. **Ajustes de privacidad**: ver y cambiar el consentimiento (incluido revocarlo), "Descargar mis datos" y "Eliminar mi cuenta" (con el campo "ELIMINAR" y el aviso de que el login de Auth0 no se borra).
+11. **Recetas sugeridas**: hasta 3 tarjetas con ingredientes ("lo tienes" / "te falta") y pasos, destacando los productos próximos a vencer, con el aviso de alergias visible, el 👍 / 👎 en cada una y un botón "Otras recetas". Ojo con el estado de lista vacía (`mensaje`).
 
 Lo que viene, y que puedes maquetar con datos falsos mientras tanto:
 
-10. **Vista supermercado**: un panel con la demanda agregada por categoría y zona.
+12. **Vista supermercado**: un panel con la demanda agregada por categoría y zona.
 
 ---
 
-## 9. Acuerdos de trabajo
+## 10. Acuerdos de trabajo
 
 - Trabajamos con **ramas + PR** (`feat/login`, `feat/inventario`…). Nada directo a `main`.
 - Si necesitas un endpoint o un campo que no existe, me escribes y lo agregamos. No lo resuelvas con lógica rara en el front.

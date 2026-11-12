@@ -8,8 +8,14 @@ from app.inventory.models import ItemInventario
 from app.invoices.models import Factura
 from app.invoices.router import get_normalizador
 from app.main import app
-from app.ocr import extraccion
-from tests.conftest import CODIGO_LECHE, HOGAR_TEST, OTRO_HOGAR, imagen_factura, item_detectado
+from tests.conftest import (
+    CODIGO_LECHE,
+    HOGAR_TEST,
+    OTRO_HOGAR,
+    imagen_factura,
+    item_detectado,
+    ocr_falso,
+)
 from tests.factura_d1 import FACTURA_D1
 from tests.factura_d1_real import FACTURA_D1_REAL
 
@@ -30,7 +36,10 @@ def test_subir_factura(client, almacenamiento):
     assert respuesta.status_code == 201
     factura = respuesta.json()
     assert factura["estado"] == "pendiente_validacion"
-    assert "LECHE" in factura["texto_ocr"]
+    assert factura["metodo"] == "texto"
+    # Sin encabezado de columnas no hay bloque: se guardan (y se enviaron) solo las
+    # líneas que parecen de productos.
+    assert "LECHE" in factura["texto_ocr"] and "PAN" in factura["texto_ocr"]
     nombres = [i["nombre"] for i in factura["items_detectados"]]
     assert nombres == ["Leche entera 1.1 L", "Pan tajado"]
     assert "hogar_id" not in factura and "imagen_key" not in factura
@@ -61,7 +70,8 @@ def test_factura_queda_en_error_si_falla_el_pipeline(client):
     assert factura["estado"] == "error"
     assert factura["error"]
     assert factura["items_detectados"] == []
-    assert "LECHE" in factura["texto_ocr"]  # el OCR sí alcanzó a correr
+    # Se guarda lo que se le envió a Gemini (las líneas de productos), no el texto completo.
+    assert factura["texto_ocr"] == "SUPERMERCADO EL ROBLE\nLECHE ENTERA 4.500\nPAN TAJADO 6.200"
 
 
 def test_listar_y_obtener(client):
@@ -126,7 +136,7 @@ def _producto(codigo: str) -> Producto | None:
 
 
 def test_factura_guarda_encabezado_y_recorte(client, monkeypatch):
-    monkeypatch.setattr(extraccion, "extraer_texto", lambda imagen: FACTURA_D1)
+    ocr_falso(monkeypatch, FACTURA_D1)
     factura = subir(client).json()
 
     assert factura["supermercado"] == "D1"
@@ -146,7 +156,7 @@ def test_items_detectados_traen_origen_y_revisar(client):
     assert item["revisar"] is True
 
 
-def test_confirmar_guarda_el_producto_en_el_catalogo(client):
+def test_confirmar_guarda_el_producto_en_el_catalogo(client, factura_verificada):
     factura_id = subir(client).json()["id"]
 
     leche = {**LECHE, "nombre": "Leche entera Alquería 1.1 L", "codigo": CODIGO_LECHE}
@@ -161,7 +171,7 @@ def test_confirmar_guarda_el_producto_en_el_catalogo(client):
         assert item.producto_id == producto.id
 
 
-def test_producto_conocido_usa_el_catalogo(client):
+def test_producto_conocido_usa_el_catalogo(client, factura_verificada):
     """Una segunda factura con el mismo código toma el nombre del catálogo, no el de la IA."""
     primera = subir(client).json()["id"]
     leche = {**LECHE, "nombre": "Leche Alquería 1.1 L", "categoria": "otros"}
@@ -175,7 +185,7 @@ def test_producto_conocido_usa_el_catalogo(client):
     assert pan_detectado["origen"] == "ia"  # sin código
 
 
-def test_confirmar_actualiza_el_catalogo(client):
+def test_confirmar_actualiza_el_catalogo(client, factura_verificada):
     for nombre in ("Leche entera 1.1 L", "Leche entera Alquería 1.1 L"):
         factura_id = subir(client).json()["id"]
         leche = {**LECHE, "nombre": nombre, "codigo": CODIGO_LECHE}
@@ -197,9 +207,9 @@ def test_factura_real_d1_de_punta_a_punta(client, monkeypatch):
 
     def gemini_espia(texto):
         textos_enviados.append(texto)
-        return [item_detectado()]
+        return [item_detectado(descripcion_impresa="DETERGENTE LT")]
 
-    monkeypatch.setattr(extraccion, "extraer_texto", lambda imagen: FACTURA_D1_REAL)
+    ocr_falso(monkeypatch, FACTURA_D1_REAL)
     app.dependency_overrides[get_normalizador] = lambda: gemini_espia
     respuesta = subir(client)
     assert respuesta.status_code == 201
@@ -217,7 +227,7 @@ def test_factura_real_d1_de_punta_a_punta(client, monkeypatch):
         assert db.get(Factura, factura["id"]).recortada is True
 
     # Nada del encabezado ni del pie llega a Gemini.
-    for dato in ("TARJ", "9419", "RAUL", "TATIS", "NIT", "Nit", "BOGOTA", "152078", "267787"):
+    for dato in ("TARJ", "9419", "PEDRO", "PRUEBA", "NIT", "Nit", "BOGOTA", "152078", "267787"):
         assert dato not in enviado
     for pedazo_de_hash in ("9fa2d", "2674a0d", "818702e", "442257b", "500db7"):
         assert pedazo_de_hash not in enviado
@@ -231,15 +241,21 @@ def test_factura_real_d1_de_punta_a_punta(client, monkeypatch):
     assert factura["requiere_revision"] is True
 
     # El texto completo que se guarda también queda anonimizado.
-    for dato in ("9419", "RAUL", "TATIS", "S00276952", "890.930.534", "818702e"):
+    for dato in ("9419", "PEDRO", "PRUEBA", "S00276952", "890.930.534", "818702e"):
         assert dato not in factura["texto_ocr"]
 
 
 def test_factura_cuadrada_no_requiere_revision(client, monkeypatch):
     def normalizador(texto):
         return [
-            item_detectado(cantidad=1, precio_unitario=100000, precio_total=100000),
             item_detectado(
+                descripcion_impresa="DETERGENTE LT",
+                cantidad=1,
+                precio_unitario=100000,
+                precio_total=100000,
+            ),
+            item_detectado(
+                descripcion_impresa="VARSO. BRILLA",
                 nombre="Varsol",
                 cantidad=1,
                 precio_unitario=30690,
@@ -248,7 +264,7 @@ def test_factura_cuadrada_no_requiere_revision(client, monkeypatch):
             ),
         ]
 
-    monkeypatch.setattr(extraccion, "extraer_texto", lambda imagen: FACTURA_D1_REAL)
+    ocr_falso(monkeypatch, FACTURA_D1_REAL)
     app.dependency_overrides[get_normalizador] = lambda: normalizador
     factura = subir(client).json()
 

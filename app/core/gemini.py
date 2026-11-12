@@ -82,7 +82,7 @@ def _con_reintento(
     cliente: genai.Client,
     etapa: str,
     modelo: str,
-    contenido: str,
+    contenido: types.ContentListUnion,
     config: types.GenerateContentConfig,
 ) -> types.GenerateContentResponse:
     """Hasta MAX_INTENTOS llamadas al mismo modelo; reintenta solo errores pasajeros."""
@@ -131,7 +131,7 @@ def generar_contenido(
     etapa: str,
     *,
     modelo: str,
-    contenido: str,
+    contenido: types.ContentListUnion,
     config: types.GenerateContentConfig,
     timeout_segundos: float,
     modelo_respaldo: str | None = None,
