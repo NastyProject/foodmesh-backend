@@ -62,7 +62,9 @@ _BASURA_INICIAL = 3
 _LARGO_BASURA = 2
 # Un valor en pesos: con separador de miles ("130,690", "18.625") o sin él ("4500").
 # Los lookarounds evitan tomar los centavos de "130.690,00" como otro número.
-_VALOR = re.compile(r"(?<![\d.,])(\d{1,3}(?:[.,]\d{3})+|\d+)(?![\d])")
+# Tras el separador se tolera UN espacio, solo si vienen exactamente 3 dígitos: el OCR
+# sin binarizar lee "TOTAL 9, 380" (factura3 del D1). "9, 38" o "9, 3800" no se unen.
+_VALOR = re.compile(r"(?<![\d.,])(\d{1,3}(?:[.,] ?\d{3})+|\d+)(?![\d])")
 
 
 def normalizar(texto: str) -> str:
@@ -164,7 +166,7 @@ def _valor(linea: str) -> int | None:
     La línea puede traer basura del OCR ("4 TOTAL o 130,690 1"): el total siempre es
     mayor que esa basura.
     """
-    valores = [int(re.sub(r"[.,]", "", m[1])) for m in _VALOR.finditer(linea)]
+    valores = [int(re.sub(r"[., ]", "", m[1])) for m in _VALOR.finditer(linea)]
     return max(valores) if valores else None
 
 
