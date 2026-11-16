@@ -212,6 +212,25 @@ def test_lineas_de_total_validas(linea, total):
     assert extraer_total_impreso(f"DESCRIPCION VALOR\nPAN 4.500\n{linea}") == total
 
 
+
+@pytest.mark.parametrize(
+    ("linea", "total"),
+    [
+        ("TOTAL 9, 380", 9380),  # factura3 del D1 con el OCR sin binarizar
+        ("TOTAL 9,380", 9380),
+        ("TOTAL 9.380", 9380),
+        ("TOTAL 130,690", 130690),
+        ("TOTAL 130, 690", 130690),
+        # No se unen: tras el espacio no vienen exactamente 3 dígitos.
+        ("TOTAL 9, 38", 38),
+        ("TOTAL 9, 3800", 3800),
+        ("TOTAL 9,  380", 380),  # dos espacios: son dos números
+    ],
+)
+def test_total_tolera_un_espacio_tras_el_separador_de_miles(linea, total):
+    assert extraer_total_impreso(f"DESCRIPCION VALOR\nPAN 4.500\n{linea}") == total
+
+
 @pytest.mark.parametrize(
     "linea",
     [

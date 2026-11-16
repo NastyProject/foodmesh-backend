@@ -33,7 +33,7 @@ def test_preprocesar_y_extraer_texto():
     procesada = preprocesamiento.preprocesar(imagen)
 
     assert procesada.ndim == 2  # escala de grises
-    assert set(np.unique(procesada)) <= {0, 255}  # binarizada
+    assert procesada.dtype == np.uint8  # sigue en grises, sin binarizar
     texto = extraccion.extraer_texto(procesada)
     assert "LECHE ENTERA" in texto
     assert "PAN TAJADO" in texto

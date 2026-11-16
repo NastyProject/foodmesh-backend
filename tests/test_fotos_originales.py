@@ -4,7 +4,7 @@ Gemini, anclaje de lo que devuelve Gemini al texto enviado, y Ara."""
 import pytest
 from sqlalchemy import func, select
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.db import SessionLocal
 from app.invoices.models import Factura
 from app.invoices.router import get_normalizador
@@ -31,7 +31,22 @@ from tests.facturas_reales import (
 )
 from tests.test_invoices import subir
 
-MIN_TOKENS = 0.32  # el valor por defecto de QUALITY_MIN_TOKENS_LEGIBLES
+# Umbrales con los que se calibraron los textos de tests/facturas_reales.py. Esos textos
+# salieron del OCR binarizado anterior (antes de preprocesar sin binarizar y ampliar):
+# con ellos, la basura de 3.jpeg y 4.jpeg dio 0.26-0.28 de tokens legibles. Con el
+# preprocesamiento actual, la foto 4 real da 0.13. No son los valores por defecto: esos
+# se leen siempre de la configuración.
+MIN_CONFIANZA_CALIBRACION_BINARIZADA = 45
+MIN_TOKENS_CALIBRACION_BINARIZADA = 0.32
+
+
+@pytest.fixture
+def umbrales_binarizados(monkeypatch):
+    """Fija los umbrales de la calibración binarizada, para probar el mecanismo de la
+    puerta de legibilidad con estos textos sin depender de los valores por defecto."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "quality_min_confianza_ocr", MIN_CONFIANZA_CALIBRACION_BINARIZADA)
+    monkeypatch.setattr(settings, "quality_min_tokens_legibles", MIN_TOKENS_CALIBRACION_BINARIZADA)
 
 
 class Espia:
@@ -54,7 +69,7 @@ def _tokens_legibles(texto: str) -> float:
 @pytest.mark.parametrize("factura", [FACTURA_B3_ILEGIBLE, FACTURA_B4_ILEGIBLE])
 def test_las_fotos_ilegibles_no_pasan(factura):
     """3.jpeg y 4.jpeg tenían buen enfoque (461 y 729) pero el OCR leyó basura."""
-    assert _tokens_legibles(factura) < MIN_TOKENS
+    assert _tokens_legibles(factura) < MIN_TOKENS_CALIBRACION_BINARIZADA
 
 
 @pytest.mark.parametrize(
@@ -70,7 +85,7 @@ def test_las_fotos_ilegibles_no_pasan(factura):
     ],
 )
 def test_las_fotos_legibles_pasan(factura):
-    assert _tokens_legibles(factura) >= MIN_TOKENS
+    assert _tokens_legibles(factura) >= MIN_TOKENS_CALIBRACION_BINARIZADA
 
 
 @pytest.mark.parametrize(
@@ -117,7 +132,7 @@ def test_confianza_media_solo_de_palabras_de_3_o_mas_alfanumericos():
         (FACTURA_5_D1, 30.0),  # texto bueno, pero Tesseract dudó de casi todo
     ],
 )
-def test_ilegible_no_llama_a_gemini(monkeypatch, texto, confianza):
+def test_ilegible_no_llama_a_gemini(monkeypatch, umbrales_binarizados, texto, confianza):
     ocr_falso(monkeypatch, texto, confianza=confianza)
     espia = Espia()
     resultado = procesar_factura(imagen_factura(), espia)
@@ -152,7 +167,9 @@ def _facturas_del_hogar() -> int:
         return db.scalar(select(func.count()).where(Factura.hogar_id == HOGAR_TEST))
 
 
-def test_api_foto_ilegible_responde_422_sin_gemini_ni_factura(client, monkeypatch, almacenamiento):
+def test_api_foto_ilegible_responde_422_sin_gemini_ni_factura(
+    client, monkeypatch, almacenamiento, umbrales_binarizados
+):
     ocr_falso(monkeypatch, FACTURA_B4_ILEGIBLE)
     espia = Espia()
     app.dependency_overrides[get_normalizador] = lambda: espia
@@ -168,9 +185,31 @@ def test_api_foto_ilegible_responde_422_sin_gemini_ni_factura(client, monkeypatc
 
 
 def test_los_umbrales_de_legibilidad_son_configurables(client, monkeypatch):
+    ocr_falso(monkeypatch, FACTURA_B4_ILEGIBLE)  # 0.28 de tokens legibles
+    monkeypatch.setattr(get_settings(), "quality_min_tokens_legibles", 0.32)
+    assert subir(client).status_code == 422
     monkeypatch.setattr(get_settings(), "quality_min_tokens_legibles", 0.2)
-    ocr_falso(monkeypatch, FACTURA_B4_ILEGIBLE)
     assert subir(client).status_code == 201
+
+
+def test_umbrales_de_legibilidad_por_defecto():
+    """Calibrados con la evaluación de 22 facturas (sin binarización + ampliación):
+    40/0.15 no rechaza fotos legibles. Se leen los defaults de la clase, no del .env."""
+    campos = Settings.model_fields
+    assert campos["quality_min_confianza_ocr"].default == 40
+    assert campos["quality_min_tokens_legibles"].default == 0.15
+
+
+@pytest.mark.parametrize(
+    "factura",
+    [FACTURA_B16_ARA, FACTURA_B20, FACTURA_D1_REAL, FACTURA_5_D1, FACTURA_6_ALKOSTO],
+)
+def test_las_fotos_legibles_pasan_con_los_umbrales_vigentes(factura):
+    settings = get_settings()
+    legibilidad = medir_legibilidad(LecturaOCR(factura, [("LECHE", 90.0)]))
+    assert es_legible(
+        legibilidad, settings.quality_min_confianza_ocr, settings.quality_min_tokens_legibles
+    )
 
 
 def test_el_enfoque_minimo_ya_no_rechaza_la_foto_20():
@@ -275,10 +314,11 @@ def test_descripcion_multilinea_se_ancla_a_varios_renglones():
 
 def test_yuca_la_frena_la_legibilidad_no_el_anclaje():
     """ "Ltda Yuca, o ENIMGM0O: 31.000": "Yuca" y "31.000" sí están impresos, así que el
-    anclaje no puede descartarlo. Lo frena la legibilidad: la foto 4 no llega a Gemini."""
+    anclaje no puede descartarlo. Lo frena la legibilidad: la foto 4 no llega a Gemini
+    (con el OCR actual da 0.13 de tokens legibles, bajo el mínimo de 0.15)."""
     yuca = item_detectado(descripcion_impresa="Yuca", precio_total=31000, precio_unitario=31000)
     assert anclar([yuca], FACTURA_B4_ILEGIBLE).descartados == 0
-    assert _tokens_legibles(FACTURA_B4_ILEGIBLE) < MIN_TOKENS
+    assert _tokens_legibles(FACTURA_B4_ILEGIBLE) < MIN_TOKENS_CALIBRACION_BINARIZADA
 
 
 def test_api_cuenta_los_items_descartados(client, monkeypatch):

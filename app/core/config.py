@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     quality_min_lado_px: int = 600
     # Legibilidad del OCR, medida después de Tesseract y antes de Gemini (ver
     # app/ocr/legibilidad.py). Confianza media de Tesseract (0-100) y proporción de
-    # tokens legibles (0-1). Con las facturas reales, los tokens dieron 0.26-0.28 en
-    # las ilegibles y 0.36 o más en las legibles: calibrar con probar_factura.py.
-    quality_min_confianza_ocr: float = 45
-    quality_min_tokens_legibles: float = 0.32
+    # tokens legibles (0-1). Calibrados con la evaluación de 22 facturas (sin
+    # binarización + ampliación); 40/0.15 no rechaza fotos legibles.
+    quality_min_confianza_ocr: float = 40
+    quality_min_tokens_legibles: float = 0.15
     # Generar recetas en segundo plano cuando cambia el inventario o las preferencias,
     # para que el usuario las encuentre en caché.
     precalcular_recetas: bool = True
