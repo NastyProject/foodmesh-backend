@@ -14,6 +14,26 @@
 
 ---
 
+## 🌐 Backend desplegado
+
+La API también está publicada en **https://32-200-219-57.sslip.io** (documentación en **https://32-200-219-57.sslip.io/docs**).
+
+```env
+# .env del frontend, para probar contra el backend desplegado
+VITE_API_URL=https://32-200-219-57.sslip.io
+```
+
+> ⚠️ Corre en **AWS Academy Learner Lab**, así que solo está disponible **mientras yo tenga el lab encendido**. Si vas a probar contra él, **avísame antes** para prenderlo. Para el día a día, usa el backend en tu máquina (sección 2).
+
+**Configuración de la EC2:** en el `.env` de producción hay que definir los umbrales de legibilidad del OCR calibrados para el preprocesamiento actual (sin binarizar):
+
+```env
+QUALITY_MIN_CONFIANZA_OCR=40
+QUALITY_MIN_TOKENS_LEGIBLES=0.15
+```
+
+---
+
 ## 1. Estado del backend
 
 | Funcionalidad | Estado |
@@ -24,6 +44,7 @@
 | Preferencias del hogar (dieta, alergias, gustos) | ✅ Listo |
 | Recomendación de recetas | ✅ Listo |
 | Consentimiento, exportar y borrar la cuenta (Ley 1581) | ✅ Listo |
+| Backend desplegado en AWS (EC2 + RDS + S3) | ✅ Listo |
 | Demanda agregada (vista supermercado) | ⏳ Pendiente |
 
 Cada usuario pertenece a un **hogar**, y solo ve el inventario de su hogar. El frontend **nunca** envía el `hogar_id`: el backend lo saca del token.
@@ -42,14 +63,22 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 
-cp .env.example .env               # te paso los valores de Auth0 y la API key de Gemini por privado
+cp .env.example .env               # te paso los valores de Auth0 por privado; la API key de Gemini es tuya (abajo)
 
 docker compose up -d db redis      # Postgres y Redis (caché de recetas)
 alembic upgrade head               # crea las tablas
-uvicorn app.main:app --reload      # API en http://localhost:8000
+uvicorn app.main:app --reload --port 8001   # API en http://localhost:8001
 ```
 
-Documentación interactiva de todos los endpoints: **http://localhost:8000/docs**
+Documentación interactiva de todos los endpoints: **http://localhost:8001/docs**
+
+**API key de Gemini:** esta **no** se comparte. Cada uno crea la suya gratis en **https://aistudio.google.com** (botón **Get API key**), porque cada key tiene su propia cuota: si usamos la misma, nos la gastamos entre todos. Ponla en tu `.env` junto con los modelos:
+
+```env
+GEMINI_API_KEY=<tu key>
+GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_MODEL_RECETAS=gemini-3.5-flash-lite
+```
 
 > El CORS ya permite `http://localhost:5173`, que es el puerto por defecto de Vite. Si usas otro puerto, avísame.
 
@@ -73,7 +102,7 @@ Valores que necesitas:
 VITE_AUTH0_DOMAIN=dev-7d1om2jb1rsusys2.us.auth0.com
 VITE_AUTH0_CLIENT_ID=<client id de tu SPA>
 VITE_AUTH0_AUDIENCE=https://api.foodmesh
-VITE_API_URL=http://localhost:8000
+VITE_API_URL=http://localhost:8001
 ```
 
 ⚠️ El **audience** es obligatorio. Sin él, Auth0 te da un token que el backend no acepta (401).
@@ -443,7 +472,7 @@ El body es **opcional**:
   "mensaje": null,
   "cache": "miss",
   "latencia_ms": 4120,
-  "modelo": "gemini-2.5-flash"
+  "modelo": "gemini-3.5-flash-lite"
 }
 ```
 
@@ -470,7 +499,7 @@ El body es **opcional**:
     "mensaje": "No encontramos recetas que cumplan tus preferencias con lo que tienes en el inventario. Intenta pedir otras recetas, agrega productos o revisa tus preferencias.",
     "cache": "miss",
     "latencia_ms": 8350,
-    "modelo": "gemini-2.5-flash"
+    "modelo": "gemini-3.5-flash-lite"
   }
   ```
 - Con `409` (sin alimentos), el `detail` ya trae un mensaje listo para mostrar.
@@ -565,7 +594,7 @@ No escribas los tipos a mano: se generan desde el backend, y así nunca quedan d
 
 ```bash
 npm i -D openapi-typescript
-npx openapi-typescript http://localhost:8000/openapi.json -o src/api/schema.d.ts
+npx openapi-typescript http://localhost:8001/openapi.json -o src/api/schema.d.ts
 ```
 
 Vuelve a correrlo cada vez que te avise que cambió algún endpoint. Si quieres, agrégalo como script `"gen:api"` en el `package.json`.
@@ -598,7 +627,7 @@ Lo que viene, y que puedes maquetar con datos falsos mientras tanto:
 
 - Trabajamos con **ramas + PR** (`feat/login`, `feat/inventario`…). Nada directo a `main`.
 - Si necesitas un endpoint o un campo que no existe, me escribes y lo agregamos. No lo resuelvas con lógica rara en el front.
-- El **despliegue del frontend** va en Vercel; lo configuramos cuando tengamos las primeras pantallas.
+- El **despliegue del frontend** va en Vercel; lo configuramos cuando tengamos las primeras pantallas. Cuando tengas la URL de Vercel, **pásamela**: hay que agregarla a `CORS_ORIGINS` en el backend y a **Allowed Callback URLs**, **Allowed Logout URLs** y **Allowed Web Origins** de la SPA en Auth0. Sin eso, el login y las llamadas a la API fallan desde Vercel.
 - Al final, tú grabas el **video de la demo**, así que piensa en el flujo desde ya: login → subir factura → validar → inventario → recetas.
 
 Cualquier duda, me escribes. 🚀
