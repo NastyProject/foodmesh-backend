@@ -104,7 +104,7 @@ def test_recomendar_recetas(client, espia):
     assert receta["usa_proximos_a_vencer"] == [
         {"item_id": arroz, "nombre": "Arroz blanco", "dias_para_vencer": 1}
     ]
-    assert receta["ingredientes_faltantes"] == ["Cebolla larga"]
+    assert receta["ingredientes_faltantes"] == ["Cebolla larga: 1 tallo"]
 
     # Lo que se le envió a Gemini: ids cortos, solo alimentos y nada del hogar.
     [texto] = espia.textos
@@ -159,7 +159,7 @@ def test_item_id_inventado_o_de_otro_hogar_queda_como_a_comprar(client):
 
     [receta] = recomendar(client).json()["recetas"]
     assert [i["item_id"] for i in receta["ingredientes"]][1:] == [None, None]
-    assert receta["ingredientes_faltantes"] == ["Papa", "Tomate"]
+    assert receta["ingredientes_faltantes"] == ["Papa: 1 unidad", "Tomate: 1 unidad"]
 
 
 def test_receta_con_alergeno_declarado_se_descarta(client):
@@ -733,13 +733,13 @@ def test_basicos_no_se_envian_ni_se_toman_del_inventario(client):
         IngredienteIA(nombre="Aceite", cantidad=1, unidad="cucharada", item_id="p1"),
         IngredienteIA(nombre="Sal", cantidad=None, unidad=None, item_id=None),
         IngredienteIA(nombre="Agua sin gas", cantidad=2, unidad="taza", item_id=None),
-        IngredienteIA(nombre="Cebolla larga", cantidad=1, unidad="unidad", item_id=None),
+        IngredienteIA(nombre="Cebolla larga", cantidad=1, unidad="tallo", item_id=None),
     ]
     espia = usar(GeneradorEspia([receta_falsa(ingredientes=ingredientes)]))
 
     [receta] = recomendar(client).json()["recetas"]
     assert [i["item_id"] for i in receta["ingredientes"]] == [arroz, None, None, None, None]
-    assert receta["ingredientes_faltantes"] == ["Cebolla larga"]
+    assert receta["ingredientes_faltantes"] == ["Cebolla larga: 1 tallo"]
     assert [p["nombre"] for p in receta["usa_proximos_a_vencer"]] == ["Arroz"]
 
     [texto] = espia.textos
@@ -1154,3 +1154,30 @@ def test_sin_respaldo_configurado_solo_se_busca_el_principal(monkeypatch):
     monkeypatch.setattr(get_settings(), "gemini_model_recetas", "modelo-principal")
     monkeypatch.setattr(get_settings(), "gemini_model_recetas_respaldo", "")
     assert service.modelos_recetas() == ["modelo-principal"]
+
+
+@pytest.mark.parametrize(
+    ("cantidad", "unidad", "esperado"),
+    [
+        (1, "taza", "Arroz: 1 taza"),
+        (0.5, "taza", "Arroz: 0.5 taza"),
+        (2, None, "Arroz: 2"),
+        (None, None, "Arroz"),
+    ],
+)
+def test_faltante_lleva_la_cantidad_en_el_texto(cantidad, unidad, esperado):
+    ingrediente = service.IngredienteOut(
+        nombre="Arroz", cantidad=cantidad, unidad=unidad, item_id=None
+    )
+    assert service._texto_faltante(ingrediente) == esperado
+
+
+def test_instrucciones_piden_pasos_detallados():
+    assert "entre 4 y 7" in INSTRUCCIONES
+    assert "de la forma habitual" in INSTRUCCIONES  # aparece como prohibido
+    assert "nunca uno que hay que comprar" in INSTRUCCIONES
+
+
+def test_instrucciones_piden_recetas_reconocibles():
+    assert "reales y reconocibles" in INSTRUCCIONES
+    assert "más ingredientes a comprar" in INSTRUCCIONES

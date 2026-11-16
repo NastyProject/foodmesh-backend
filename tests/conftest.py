@@ -114,7 +114,7 @@ def receta_falsa(titulo: str = "Calentado de arroz", **cambios) -> RecetaIA:
         "porciones": 2,
         "ingredientes": [
             IngredienteIA(nombre="Arroz", cantidad=2, unidad="taza", item_id="p1"),
-            IngredienteIA(nombre="Cebolla larga", cantidad=1, unidad="unidad", item_id=None),
+            IngredienteIA(nombre="Cebolla larga", cantidad=1, unidad="tallo", item_id=None),
         ],
         "pasos": ["Picar la cebolla.", "Sofreír y agregar el arroz."],
         "por_que": "Usa el arroz antes de que se dañe.",
