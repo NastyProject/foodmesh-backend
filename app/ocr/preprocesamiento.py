@@ -127,11 +127,13 @@ def binarizar(gris: np.ndarray) -> np.ndarray:
     )
 
 
-ANCHO_OBJETIVO = 2400  # px; Tesseract lee mejor el texto pequeño de un recibo con ~2000-2500 px de ancho
+# Tesseract lee mejor el texto pequeño de un recibo con ~2000-2500 px de ancho.
+ANCHO_OBJETIVO = 2400  # px
 
 
 def ampliar(gris: np.ndarray, ancho_objetivo: int = ANCHO_OBJETIVO) -> np.ndarray:
-    """Amplía hasta `ancho_objetivo` px de ancho; nunca reduce ni amplía una foto que ya es grande."""
+    """Amplía hasta `ancho_objetivo` px de ancho; nunca reduce ni amplía una foto que ya
+    es grande."""
     ancho = gris.shape[1]
     if ancho >= ancho_objetivo:
         return gris
@@ -141,5 +143,6 @@ def ampliar(gris: np.ndarray, ancho_objetivo: int = ANCHO_OBJETIVO) -> np.ndarra
 
 def preprocesar(imagen: np.ndarray) -> np.ndarray:
     # Sin binarizar: el umbral adaptativo dejaba ilegibles la mayoría de las fotos de celular
-    # (evaluación sobre 22 facturas, ver evaluacion/). `binarizar` se conserva para compararlo.
+    # (evaluación de Julián sobre 22 facturas, pendiente de subir al repo). `binarizar` se
+    # conserva para compararlo.
     return ampliar(corregir_perspectiva(a_grises(imagen)))
