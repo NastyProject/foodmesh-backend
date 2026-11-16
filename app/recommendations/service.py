@@ -400,6 +400,16 @@ def _motivo_descarte(receta: RecetaIA, textos: list[str], preferencias: Preferen
     return None
 
 
+def _texto_faltante(ingrediente: IngredienteOut) -> str:
+    """Texto como "Arroz: 1 taza". La cantidad va dentro del texto porque ingredientes_faltantes es
+    una lista de textos y el frontend (ya desplegado) solo los muestra; cambiarla a
+    objetos rompería el contrato. Sin cantidad, queda solo el nombre."""
+    if ingrediente.cantidad is None:
+        return ingrediente.nombre
+    medida = f"{ingrediente.cantidad:g} {ingrediente.unidad or ''}".strip()
+    return f"{ingrediente.nombre}: {medida}"
+
+
 def validar_recetas(
     recetas_ia: list[RecetaIA],
     items: dict[str, ItemInventario],
@@ -466,7 +476,9 @@ def validar_recetas(
                 por_que=receta.por_que,
                 usa_proximos_a_vencer=sorted(proximos, key=lambda p: p.dias_para_vencer),
                 ingredientes_faltantes=[
-                    i.nombre for i in ingredientes if i.item_id is None and i.nombre not in basicos
+                    _texto_faltante(i)
+                    for i in ingredientes
+                    if i.item_id is None and i.nombre not in basicos
                 ],
             )
         )

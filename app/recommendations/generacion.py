@@ -18,14 +18,15 @@ from app.recommendations.schemas import RecetaIA, RespuestaRecetasIA
 
 # Cambiarla cuando cambie el prompt o la forma de la entrada: hace parte de la clave
 # del caché, así que invalida las recetas generadas con la versión anterior.
-VERSION_PROMPT = "3"
+VERSION_PROMPT = "4"
 NUMERO_RECETAS = 3
 # Un ítem que vence en estos días o menos se considera "próximo a vencer".
 DIAS_PROXIMO_A_VENCER = 3
-# Tope de tokens de salida. Tres recetas ocupan ~1000-1700 tokens; el tope solo evita
-# una respuesta desbocada (no acelera las normales). Si se alcanza, el JSON queda
-# cortado y la llamada falla, así que debe quedar holgado.
-MAX_TOKENS_SALIDA = 4096
+# Tope de tokens de salida. Con pasos detallados (prompt v4), tres recetas ocupan más
+# que antes (~1000-1700 tokens en v3); el tope solo evita una respuesta desbocada (no
+# acelera las normales). Si se alcanza, el JSON queda cortado y la llamada falla, así
+# que debe quedar holgado.
+MAX_TOKENS_SALIDA = 8192
 
 
 @dataclass
@@ -72,6 +73,13 @@ vegetariana y además sin lácteos, huevo ni miel de abejas (la miel de panela s
 - Las porciones deben ser las que pide el hogar.
 - Prefiere cocina casera colombiana cuando tenga sentido (arepas, sudados, calentado, \
 caldos, arroces, ensaladas, jugos naturales), con ingredientes fáciles de conseguir.
+- Propón recetas reales y reconocibles de cocina casera colombiana o latinoamericana, \
+que alguien haya comido antes (arroz con atún, sudado de pollo, tortilla de papa, \
+jugo de fruta). Evita combinaciones inusuales o inventadas, como una sopa fría de \
+jugo con atún o arroz cocido en jugo de fruta. No uses un alimento en una receta solo \
+porque está en la lista: si no encaja de forma natural, déjalo para otra receta. Si \
+con el inventario no sale una receta sensata, es mejor agregar más ingredientes a \
+comprar que inventar una combinación extraña.
 - Agua, sal, aceite, azúcar y pimienta (en cualquier variante: agua sin gas, aceite \
 vegetal, sal marina...) se consideran siempre disponibles: úsalos libremente, con \
 item_id null, aunque no estén en la lista.
@@ -81,16 +89,37 @@ ensalada, guiso, arroz, tortilla...).
 - Usa solo alimentos. Nunca uses productos de aseo, cuidado personal ni para mascotas \
 como ingrediente, aunque aparezcan en la lista.
 
+Quien cocina puede no saber cocinar: escribe para alguien que nunca ha hecho la receta.
+
 Para cada receta:
 - titulo y descripcion (una frase), en español.
 - tiempo_minutos y porciones.
 - ingredientes: de más a menos importante (primero la base y la proteína), con \
-nombre, cantidad y unidad (null si es "al gusto"). En item_id pon el id del alimento \
-de la lista que usa ("p1"), o null si hay que comprarlo o es un básico. Usa solo ids \
-que estén en la lista.
-- pasos: como máximo 6, cortos y en orden.
+nombre, cantidad y unidad. En item_id pon el id del alimento de la lista que usa \
+("p1"), o null si hay que comprarlo o es un básico. Usa solo ids que estén en la lista.
+- Los ingredientes que hay que comprar (item_id null) llevan siempre cantidad y \
+unidad concretas, para que el hogar sepa cuánto comprar. Solo los básicos pueden ir \
+con cantidad y unidad null ("al gusto").
+- Unidades naturales de cocina casera, como se diría en una tienda o una cocina \
+colombiana: "2 latas" de atún, "1 taza" de arroz, "2 dientes" de ajo, "1 tallo" de \
+cebolla larga, "2 cucharadas", "1 vaso" de jugo. Aunque la lista diga "unidad", "g" o \
+"ml", tradúcelo a la unidad natural ("Atún en agua 160 g, 2 unidad" son 2 latas). Usa \
+"unidad" solo para cosas que se cuentan sueltas (huevos, tomates, arepas).
+- pasos: entre 4 y 7, en orden, cada uno una o dos frases que empiecen con un verbo. \
+Cada paso debe decir:
+  - la cantidad concreta de lo que se agrega en ese paso ("agrega 1 taza de arroz y \
+2 tazas de agua"), nunca "el arroz" o "un poco";
+  - si hay fuego, el nivel (bajo, medio o alto);
+  - el tiempo aproximado ("unos 5 minutos");
+  - una señal de punto para saber cuándo seguir ("hasta que el agua se evapore y \
+salgan huequitos en el arroz", "hasta que la cebolla esté transparente", "hasta que \
+hierva").
+  Nunca des por sabido cómo se hace algo: nada de "de la forma habitual", "como de \
+costumbre", "al estilo tradicional" ni "cocina el arroz" sin explicar cómo.
 - por_que: en una frase, qué productos próximos a vencer aprovecha y por qué la \
-receta es una buena forma de usarlos.\
+receta es una buena forma de usarlos. Menciona como aprovechados SOLO alimentos que \
+usas con un item_id de la lista; nunca uno que hay que comprar (si falta arroz, no \
+digas "aprovecha tu arroz").\
 """
 
 
